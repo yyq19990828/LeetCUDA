@@ -42,12 +42,12 @@ def merge_attn_states_torch(
     return output, output_lse
 
 
-NUM_TOKENS = [256, 512, 613, 1024, 1536, 4096]
+NUM_BATCH_TOKENS = [256, 512, 613, 1024, 1536, 4096]
 NUM_QUERY_HEADS = [4, 8, 16, 32]
 HEAD_SIZES = [64, 96, 128]
 DTYPES = [torch.float32, torch.half, torch.bfloat16]
 
-@pytest.mark.parametrize("num_tokens", NUM_TOKENS)
+@pytest.mark.parametrize("num_tokens", NUM_BATCH_TOKENS)
 @pytest.mark.parametrize("num_query_heads", NUM_QUERY_HEADS)
 @pytest.mark.parametrize("head_size", HEAD_SIZES)
 @pytest.mark.parametrize("output_dtype", DTYPES)
