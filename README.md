@@ -218,6 +218,8 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 - [📚 Hard ⭐️⭐️⭐️](#cuda-kernel-hard)
 - [📚 Hard+ ⭐️⭐️⭐️⭐️](#cuda-kernel-hard-plus)
 - [📚 Hard++ ⭐⭐⭐️⭐️⭐️](#cuda-kernel-hard-plus)
+- [📚 Triton ⭐⭐⭐️](#triton-kernel)
+- [📚 CUTLASS ⭐⭐⭐️](#cutlass-kernel)
 
 [📚 Easy](#cuda-kernel-easy-medium) and [📚 Medium](#cuda-kernel-easy-medium) sections cover operations such as `element-wise, mat_trans, warp/block reduce, nms, relu, gelu, swish, layer-norm, rms-norm, online-softmax, dot-prod, embedding` and basic usage for `FP32`, `FP16`, `BF16` and `FP8` . [📚 Hard](#cuda-kernel-hard), [📚 Hard+](#cuda-kernel-hard-plus) and [📚 Hard++](#cuda-kernel-hard-plus) sections delve deeper into advanced topics, primarily focusing on operations like `sgemv, sgemm, hgemv, hgemm and flash-attention`. These sections also provide numerous kernels implemented using Tensor Cores with pure MMA PTX.
 
