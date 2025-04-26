@@ -1,6 +1,6 @@
 <div align="center">
   <p align="center">
-    <h2>📚 Modern CUDA Learn Notes with PyTorch for Beginners 🐑</h2>
+    <h2>📚 LeetCUDA: Modern CUDA Learn Notes with PyTorch for Beginners 🐑</h2>
     <a href="#cuda-kernel">📚200+ CUDA Kernels</a> | <a href="#my-blogs-part-1"> 📚100+ LLM/VLM/CUDA Blogs</a> | <a href="#hgemm-tensorcores-mma-bench"> ⚡️HGEMM MMA</a> | <a href="#fa-mma-bench"> ⚡️FA-2 MMA </a> <p>
   </p>
   <img src='https://github.com/user-attachments/assets/9306862b-2a30-4a87-bb33-0fde9e9d7cea' width=250 >
