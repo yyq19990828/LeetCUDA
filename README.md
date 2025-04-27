@@ -1,12 +1,14 @@
 <!---
   <img src='https://github.com/user-attachments/assets/9306862b-2a30-4a87-bb33-0fde9e9d7cea' width=250 >
       <a href="#cuda-kernel">📚200+ CUDA Kernels</a> | <a href="#my-blogs-part-1"> 📚100+ LLM/CUDA Blogs</a> | <a href="#hgemm-tensorcores-mma-bench"> ⚡️HGEMM MMA</a> | <a href="#fa-mma-bench"> ⚡️FA-2 MMA </a> <p>
---->
 <img src='https://github.com/user-attachments/assets/b2578723-b7a7-4d8f-bcd1-5008947b808a' >
+
+--->
 
 <div align="center">
   <p align="center">
     <h2>📚 LeetCUDA: Modern CUDA Learn Notes with PyTorch for Beginners 🐑</h2>
+    <img src='https://github.com/user-attachments/assets/b2578723-b7a7-4d8f-bcd1-5008947b808a' >
   </p>
   <div align='center'>
       <img src=https://cdn.rawgit.com/sindresorhus/awesome/d7305f38d29fed78fa85652e3a63e154dd8e8829/media/badge.svg >
