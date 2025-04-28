@@ -95,7 +95,10 @@ def merge_attn_states_kernel(
     s_scale = tl.exp(s_lse) / out_se
     out = p_out * p_scale + s_out * s_scale
     tl.store(
-        output + token_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE + head_arange,
+        output
+        + token_idx * num_heads * HEAD_SIZE
+        + head_idx * HEAD_SIZE
+        + head_arange,
         out,
         mask=head_mask,
     )
@@ -174,7 +177,10 @@ def merge_attn_states_kernel_opt(
     s_scale = s_se / out_se
     out = p_out * p_scale + s_out * s_scale
     tl.store(
-        output + token_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE + head_arange,
+        output
+        + token_idx * num_heads * HEAD_SIZE
+        + head_idx * HEAD_SIZE
+        + head_arange,
         out,
         mask=head_mask,
     )

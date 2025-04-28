@@ -51,7 +51,9 @@ ext_modules.append(
             # add c compile flags
             "cxx": ["-O3", "-std=c++17"] + generator_flag,
             # add nvcc compile flags
-            "nvcc": get_build_cuda_cflags(build_pkg=True) + generator_flag + cc_flag,
+            "nvcc": get_build_cuda_cflags(build_pkg=True)
+            + generator_flag
+            + cc_flag,
         },
         include_dirs=[
             Path(this_dir) / "naive",

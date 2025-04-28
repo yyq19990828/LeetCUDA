@@ -129,7 +129,9 @@ def benchmark(size, provider):
     y = torch.rand(size, device=DEVICE, dtype=torch.float32)
     quantiles = [0.5, 0.2, 0.8]
     if provider == "torch":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: x + y, quantiles=quantiles
+        )
     if provider == "triton":
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: add(x, y), quantiles=quantiles

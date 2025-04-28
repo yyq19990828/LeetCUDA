@@ -21,15 +21,21 @@ def get_args():
     parser.add_argument("--M", type=int, default=None, help="Matrix M size")
     parser.add_argument("--N", type=int, default=None, help="Matrix N size")
     parser.add_argument("--K", type=int, default=None, help="Matrix K size")
-    parser.add_argument("--MNK", type=int, default=None, help="Matrix M=N=K size")
+    parser.add_argument(
+        "--MNK", type=int, default=None, help="Matrix M=N=K size"
+    )
     parser.add_argument(
         "--MMNK", type=int, default=12800, help="Matrix MAX M=M=N=K size"
     )
     parser.add_argument(
         "--SEP", "--sep", type=int, default=256, help="Matrix SEP M=M=N=K size"
     )
-    parser.add_argument("--warmup", "--w", type=int, default=2, help="Warmup iters")
-    parser.add_argument("--iters", "--i", type=int, default=10, help="Benchmark iters")
+    parser.add_argument(
+        "--warmup", "--w", type=int, default=2, help="Warmup iters"
+    )
+    parser.add_argument(
+        "--iters", "--i", type=int, default=10, help="Benchmark iters"
+    )
     parser.add_argument("--verbose", "--v", action="store_true", help="Verbose")
     parser.add_argument(
         "--show-matrix",
@@ -44,10 +50,16 @@ def get_args():
         help="Show all the profile info",
     )
     parser.add_argument(
-        "--show-memory", "--show-mm", action="store_true", help="Show gpu memory info"
+        "--show-memory",
+        "--show-mm",
+        action="store_true",
+        help="Show gpu memory info",
     )
     parser.add_argument(
-        "--enable-mma", "--mma", action="store_true", help="Enable MMA kernel tests"
+        "--enable-mma",
+        "--mma",
+        action="store_true",
+        help="Enable MMA kernel tests",
     )
     parser.add_argument(
         "--enable-mma-tn",
@@ -56,10 +68,16 @@ def get_args():
         help="Enable TN MMA kernel tests",
     )
     parser.add_argument(
-        "--enable-wmma", "--wmma", action="store_true", help="Enable WMMA kernel tests"
+        "--enable-wmma",
+        "--wmma",
+        action="store_true",
+        help="Enable WMMA kernel tests",
     )
     parser.add_argument(
-        "--enable-cuda", "--cuda", action="store_true", help="Enable CUDA kernel tests"
+        "--enable-cuda",
+        "--cuda",
+        action="store_true",
+        help="Enable CUDA kernel tests",
     )
     parser.add_argument(
         "--enable-mma-all",
@@ -80,7 +98,10 @@ def get_args():
         help="Enable all CUDA kernel tests",
     )
     parser.add_argument(
-        "--enable-torch", "--torch", action="store_true", help="Enable torch matmul"
+        "--enable-torch",
+        "--torch",
+        action="store_true",
+        help="Enable torch matmul",
     )
     parser.add_argument(
         "--enable-cute-tn",
@@ -89,7 +110,10 @@ def get_args():
         help="Enable cute hgemm matmul",
     )
     parser.add_argument(
-        "--enable-cute", "--cute", action="store_true", help="Enable cute hgemm matmul"
+        "--enable-cute",
+        "--cute",
+        action="store_true",
+        help="Enable cute hgemm matmul",
     )
     parser.add_argument(
         "--disable-cublas",
@@ -104,10 +128,18 @@ def get_args():
         help="Disable cublas TN hgemm",
     )
     parser.add_argument(
-        "--sleep-duration", "--sleep", type=float, default=0.1, help="Sleep duration"
+        "--sleep-duration",
+        "--sleep",
+        type=float,
+        default=0.1,
+        help="Sleep duration",
     )
     parser.add_argument(
-        "--swizzle-factor", "--swizzle", type=float, default=None, help="Swizzle factor"
+        "--swizzle-factor",
+        "--swizzle",
+        type=float,
+        default=None,
+        help="Swizzle factor",
     )
     parser.add_argument(
         "--no-default", action="store_true", help="Disable default tests"
@@ -119,7 +151,10 @@ def get_args():
         "--plot-topk", "--topk", type=int, default=8, help="Plot top k TFLOPS"
     )
     parser.add_argument(
-        "--no-plot-best", "--no-best", action="store_true", help="Not Plot best TFLOPS"
+        "--no-plot-best",
+        "--no-best",
+        action="store_true",
+        help="Not Plot best TFLOPS",
     )
     parser.add_argument(
         "--exclude-tags",
@@ -135,7 +170,10 @@ def get_args():
         "--save-tag", "--tag", type=str, default=None, help="Save name for plot"
     )
     parser.add_argument(
-        "--force-build", "--build", action="store_true", help="Force build from sources"
+        "--force-build",
+        "--build",
+        action="store_true",
+        help="Force build from sources",
     )
     return parser.parse_args()
 
@@ -145,7 +183,9 @@ pretty_print_line()
 print(args)
 pretty_print_line()
 
-hgemm = try_load_hgemm_library(force_build=args.force_build, verbose=args.verbose)
+hgemm = try_load_hgemm_library(
+    force_build=args.force_build, verbose=args.verbose
+)
 
 MAX_TFLOPS = -1
 STATIS_INFO: dict[str, list[float]] = {}
@@ -429,7 +469,11 @@ for M, N, K in zip(Ms, Ns, Ks):
     if args.enable_cuda_all:  # more cuda cores kernel tests
         run_benchmark(hgemm.hgemm_naive_f16, a, b, "(naive)", c)
         run_benchmark(
-            hgemm.hgemm_t_8x8_sliced_k_f16x8_pack_bcf, a, b, "(f16x8pack+t8x8+bcf)", c
+            hgemm.hgemm_t_8x8_sliced_k_f16x8_pack_bcf,
+            a,
+            b,
+            "(f16x8pack+t8x8+bcf)",
+            c,
         )
     if (args.enable_cuda or args.enable_cuda_all) and (not args.no_default):
         run_benchmark(
@@ -451,7 +495,11 @@ for M, N, K in zip(Ms, Ns, Ks):
         pretty_print_line("WMMA")
         run_benchmark(hgemm.hgemm_wmma_m16n16k16_mma4x2, a, b, "(wmma4x2)", c)
         run_benchmark(
-            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4, a, b, "(wmma4x2+warp2x4)", c
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4,
+            a,
+            b,
+            "(wmma4x2+warp2x4)",
+            c,
         )
         run_benchmark(
             hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem,
@@ -1017,8 +1065,12 @@ for M, N, K in zip(Ms, Ns, Ks):
             swizzle=True,
         )
     # TN layout: cublas
-    if not args.disable_cublas_tn and any((args.enable_mma_tn, args.enable_cute_tn)):
-        run_benchmark(hgemm.hgemm_cublas_tensor_op_tn, a, b_col_major, "tn(cublas)", c)
+    if not args.disable_cublas_tn and any(
+        (args.enable_mma_tn, args.enable_cute_tn)
+    ):
+        run_benchmark(
+            hgemm.hgemm_cublas_tensor_op_tn, a, b_col_major, "tn(cublas)", c
+        )
     # NN layout: cublas/torch
     if (not args.disable_cublas) and any(
         (

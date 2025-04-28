@@ -33,8 +33,12 @@ def merge_attn_states_torch(
         output_lse = torch.log(out_se) + max_lse
     p_scale = p_lse_exp / out_se  # [NUM_HEADS, NUM_TOKENS]
     s_scale = s_lse_exp / out_se  # [NUM_HEADS, NUM_TOKENS]
-    p_scale = torch.transpose(p_scale, 0, 1).unsqueeze(2)  # [NUM_TOKENS, NUM_HEADS, 1]
-    s_scale = torch.transpose(s_scale, 0, 1).unsqueeze(2)  # [NUM_TOKENS, NUM_HEADS, 1]
+    p_scale = torch.transpose(p_scale, 0, 1).unsqueeze(
+        2
+    )  # [NUM_TOKENS, NUM_HEADS, 1]
+    s_scale = torch.transpose(s_scale, 0, 1).unsqueeze(
+        2
+    )  # [NUM_TOKENS, NUM_HEADS, 1]
     output = prefix_output * p_scale + suffix_output * s_scale
     return output, output_lse
 
@@ -94,7 +98,10 @@ def generate_markdown_table():
 @pytest.mark.parametrize("output_dtype", DTYPES)
 @torch.inference_mode()
 def test_merge_attn_states(
-    num_tokens: int, num_query_heads: int, head_size: int, output_dtype: torch.dtype
+    num_tokens: int,
+    num_query_heads: int,
+    head_size: int,
+    output_dtype: torch.dtype,
 ):
     if not torch.cuda.is_available():
         pytest.skip(
@@ -113,8 +120,12 @@ def test_merge_attn_states(
     )
 
     # prefix_lse and suffix_lse contain inf and normal values
-    prefix_lse = torch.randn(NUM_HEADS, NUM_TOKENS, dtype=torch.float32, device="cuda")
-    suffix_lse = torch.randn(NUM_HEADS, NUM_TOKENS, dtype=torch.float32, device="cuda")
+    prefix_lse = torch.randn(
+        NUM_HEADS, NUM_TOKENS, dtype=torch.float32, device="cuda"
+    )
+    suffix_lse = torch.randn(
+        NUM_HEADS, NUM_TOKENS, dtype=torch.float32, device="cuda"
+    )
 
     # Generate boolean masks
     mask_prefix = torch.rand(NUM_HEADS, NUM_TOKENS) < 0.1
@@ -284,7 +295,10 @@ def test_merge_attn_states(
 
     if OUTPUT_LSE:
         torch.testing.assert_close(
-            output_lse_cuda.float(), output_lse_ref.float(), atol=1e-3, rtol=rtol
+            output_lse_cuda.float(),
+            output_lse_ref.float(),
+            atol=1e-3,
+            rtol=rtol,
         )
         print("Output LSE all match, max abs diff:")
         print(f"(Triton vs Torch) : {diff(output_lse_torch, output_lse_ref)}")
@@ -313,6 +327,9 @@ def test_merge_attn_states(
         )
     )
     if len(all_case_info) == (
-        len(NUM_BATCH_TOKENS) * len(HEAD_SIZES) * len(NUM_QUERY_HEADS) * len(DTYPES)
+        len(NUM_BATCH_TOKENS)
+        * len(HEAD_SIZES)
+        * len(NUM_QUERY_HEADS)
+        * len(DTYPES)
     ):
         generate_markdown_table()

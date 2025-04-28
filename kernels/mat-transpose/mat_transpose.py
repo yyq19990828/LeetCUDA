@@ -8,7 +8,9 @@ from torch.utils.cpp_extension import load
 
 torch.set_grad_enabled(False)
 
-CUTLASS_REPO_PATH = os.environ.get("CUTLASS_REPO_PATH", os.path.expanduser("~/cutlass"))
+CUTLASS_REPO_PATH = os.environ.get(
+    "CUTLASS_REPO_PATH", os.path.expanduser("~/cutlass")
+)
 # Load the CUDA kernel as a python module
 lib = load(
     name="mat_transpose_lib",
@@ -64,7 +66,9 @@ def run_benchmark(
     real_t = f"{out.T.equal(x)}"
     out_val = out[:2, :2].flatten().detach().cpu().numpy().tolist()[:3]
     out_val = [round(v, 8) for v in out_val]
-    print(f"{out_info:>35}: {out_val}, validate {real_t:<5}, time:{mean_time:.8f}ms")
+    print(
+        f"{out_info:>35}: {out_val}, validate {real_t:<5}, time:{mean_time:.8f}ms"
+    )
     if show_all:
         print(out)
     return out, mean_time
@@ -97,10 +101,16 @@ for M, N in MNs:
     run_benchmark(lib.mat_transpose_f32x4_col2row2d, x, "f32x4_col2row(2d)", y)
     run_benchmark(lib.mat_transpose_f32x4_row2col2d, x, "f32x4_row2col(2d)", y)
     run_benchmark(
-        lib.mat_transpose_f32x4_shared_col2row2d, x, "f32x4_shared_col2row(2d)", y
+        lib.mat_transpose_f32x4_shared_col2row2d,
+        x,
+        "f32x4_shared_col2row(2d)",
+        y,
     )
     run_benchmark(
-        lib.mat_transpose_f32x4_shared_row2col2d, x, "f32x4_shared_row2col(2d)", y
+        lib.mat_transpose_f32x4_shared_row2col2d,
+        x,
+        "f32x4_shared_row2col(2d)",
+        y,
     )
     run_benchmark(
         lib.mat_transpose_f32x4_shared_bcf_col2row2d,
@@ -115,13 +125,23 @@ for M, N in MNs:
         y,
     )
     run_benchmark(
-        lib.mat_transpose_cute_col2row_reg, x, "mat_transpose_cute_col2row_reg", y
+        lib.mat_transpose_cute_col2row_reg,
+        x,
+        "mat_transpose_cute_col2row_reg",
+        y,
     )
     run_benchmark(
-        lib.mat_transpose_cute_row2col_reg, x, "mat_transpose_cute_row2col_reg", y
+        lib.mat_transpose_cute_row2col_reg,
+        x,
+        "mat_transpose_cute_row2col_reg",
+        y,
     )
-    run_benchmark(lib.mat_transpose_cute_col_smem, x, "mat_transpose_cute_col_smem", y)
-    run_benchmark(lib.mat_transpose_cute_row_smem, x, "mat_transpose_cute_row_smem", y)
+    run_benchmark(
+        lib.mat_transpose_cute_col_smem, x, "mat_transpose_cute_col_smem", y
+    )
+    run_benchmark(
+        lib.mat_transpose_cute_row_smem, x, "mat_transpose_cute_row_smem", y
+    )
     run_benchmark(
         lib.mat_transpose_cute_col_smem_swizzled,
         x,
@@ -158,6 +178,8 @@ for M, N in MNs:
         "mat_transpose_cute_row_rvectorized_swizzled",
         y,
     )
-    run_benchmark(partial(torch.transpose_copy, dim0=0, dim1=1, out=y), x, "f32_th")
+    run_benchmark(
+        partial(torch.transpose_copy, dim0=0, dim1=1, out=y), x, "f32_th"
+    )
     run_benchmark(partial(transpose_copy_compiled, out=y), x, "f32_th_compiled")
     print("-" * 130)

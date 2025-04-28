@@ -35,7 +35,9 @@ def get_build_sources():
 
 def get_project_dir():
     return os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
     )
 
 
@@ -90,7 +92,9 @@ def get_build_cuda_cflags(build_pkg: bool = False):
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/hgemm/cublas")
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/hgemm/pybind")
     extra_cuda_cflags.append(f"-I {project_dir}/third-party/cutlass/include")
-    extra_cuda_cflags.append(f"-I {project_dir}/third-party/cutlass/tools/util/include")
+    extra_cuda_cflags.append(
+        f"-I {project_dir}/third-party/cutlass/tools/util/include"
+    )
     extra_cuda_cflags.append("-lcublas")
     return extra_cuda_cflags
 

@@ -32,8 +32,12 @@ def get_args():
     parser.add_argument("--check-all", action="store_true")
     parser.add_argument("--show-all", "--show", action="store_true")
     parser.add_argument("--show-matrix", action="store_true")
-    parser.add_argument("--only-flops-matmul", "--flops-mm", action="store_true")
-    parser.add_argument("--run-acc-f32", "--acc-f32", "--f32", action="store_true")
+    parser.add_argument(
+        "--only-flops-matmul", "--flops-mm", action="store_true"
+    )
+    parser.add_argument(
+        "--run-acc-f32", "--acc-f32", "--f32", action="store_true"
+    )
     parser.add_argument("--B", type=int, default=None)
     parser.add_argument("--H", type=int, default=None)
     parser.add_argument("--N", type=int, default=None)
@@ -46,7 +50,9 @@ def get_args():
     parser.add_argument("--iters", "--i", type=int, default=5)
     parser.add_argument("--range-k", "--gk", action="store_true")
     parser.add_argument("--build-others", "--others", action="store_true")
-    parser.add_argument("--tag-hints", "--tags", "--hints", type=str, default=None)
+    parser.add_argument(
+        "--tag-hints", "--tags", "--hints", type=str, default=None
+    )
     return parser.parse_args()
 
 
@@ -84,20 +90,30 @@ def get_build_sources():
     build_sources.append("./mma/basic/flash_attn_mma_share_kv_F32F16F16F32.cu")
     build_sources.append("./mma/basic/flash_attn_mma_share_qkv_F32F16F16F32.cu")
     build_sources.append("./mma/basic/flash_attn_mma_tiling_qk_F32F16F16F32.cu")
-    build_sources.append("./mma/basic/flash_attn_mma_tiling_qkv_F32F16F16F32.cu")
+    build_sources.append(
+        "./mma/basic/flash_attn_mma_tiling_qkv_F32F16F16F32.cu"
+    )
     # Swizzle
     build_sources.append("./mma/swizzle/flash_attn_mma_share_kv_swizzle_q.cu")
     build_sources.append("./mma/swizzle/flash_attn_mma_share_kv_swizzle_qk.cu")
     build_sources.append("./mma/swizzle/flash_attn_mma_share_kv_swizzle_qkv.cu")
     build_sources.append("./mma/swizzle/flash_attn_mma_share_qkv_swizzle_q.cu")
     build_sources.append("./mma/swizzle/flash_attn_mma_share_qkv_swizzle_qk.cu")
-    build_sources.append("./mma/swizzle/flash_attn_mma_share_qkv_swizzle_qkv.cu")
+    build_sources.append(
+        "./mma/swizzle/flash_attn_mma_share_qkv_swizzle_qkv.cu"
+    )
     build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qk_swizzle_q.cu")
     build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qk_swizzle_qk.cu")
-    build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qk_swizzle_qkv.cu")
+    build_sources.append(
+        "./mma/swizzle/flash_attn_mma_tiling_qk_swizzle_qkv.cu"
+    )
     build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_q.cu")
-    build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_qk.cu")
-    build_sources.append("./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_qkv.cu")
+    build_sources.append(
+        "./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_qk.cu"
+    )
+    build_sources.append(
+        "./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_qkv.cu"
+    )
     build_sources.append(
         "./mma/swizzle/flash_attn_mma_tiling_qkv_swizzle_q_F32F16F16F32.cu"
     )
@@ -110,15 +126,21 @@ def get_build_sources():
     # Others
     if args.build_others:
         build_sources.append("./mma/others/flash_attn_mma_share_qkv_Os2g.cu")
-        build_sources.append("./mma/others/flash_attn_mma_share_kv_F32F16F16F32_rr.cu")
-        build_sources.append("./mma/others/flash_attn_mma_share_qkv_F32F16F16F32_rr.cu")
+        build_sources.append(
+            "./mma/others/flash_attn_mma_share_kv_F32F16F16F32_rr.cu"
+        )
+        build_sources.append(
+            "./mma/others/flash_attn_mma_share_qkv_F32F16F16F32_rr.cu"
+        )
     # Pybind
     build_sources.append("./pybind/flash_attn.cc")
     return build_sources
 
 
 def get_project_dir():
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
 
 
 project_dir = get_project_dir()
@@ -153,7 +175,9 @@ def get_build_cuda_cflags(build_pkg: bool = False):
     extra_cuda_cflags.append(
         "-diag-suppress 177" if not build_pkg else "--ptxas-options=-v"
     )
-    extra_cuda_cflags.append("-Xptxas -v" if not build_pkg else "--ptxas-options=-O3")
+    extra_cuda_cflags.append(
+        "-Xptxas -v" if not build_pkg else "--ptxas-options=-O3"
+    )
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/flash-attn")
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/flash-attn/utils")
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/flash-attn/mma")
@@ -163,14 +187,18 @@ def get_build_cuda_cflags(build_pkg: bool = False):
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/flash-attn/cutlass")
     extra_cuda_cflags.append(f"-I {project_dir}/kernels/flash-attn/pybind")
     extra_cuda_cflags.append(f"-I {project_dir}/third-party/cutlass/include")
-    extra_cuda_cflags.append(f"-I {project_dir}/third-party/cutlass/tools/util/include")
+    extra_cuda_cflags.append(
+        f"-I {project_dir}/third-party/cutlass/tools/util/include"
+    )
     return extra_cuda_cflags
 
 
 def get_build_cflags():
     extra_cflags = []
     extra_cflags.append("-std=c++17")
-    extra_cflags.append("-DBUILD_FLASH_ATTN_MMA_OTHERS" if args.build_others else "")
+    extra_cflags.append(
+        "-DBUILD_FLASH_ATTN_MMA_OTHERS" if args.build_others else ""
+    )
     return extra_cflags
 
 
@@ -200,8 +228,12 @@ lib = load(
 if not args.build_others:
     fake_fa_func = lambda q, k, v, o, s: o  # fake FA func
     setattr(lib, "flash_attn_mma_stages_split_q_shared_qkv_Os2g", fake_fa_func)
-    setattr(lib, "flash_attn_mma_stages_split_q_shared_kv_acc_f32_rr", fake_fa_func)
-    setattr(lib, "flash_attn_mma_stages_split_q_shared_qkv_acc_f32_rr", fake_fa_func)
+    setattr(
+        lib, "flash_attn_mma_stages_split_q_shared_kv_acc_f32_rr", fake_fa_func
+    )
+    setattr(
+        lib, "flash_attn_mma_stages_split_q_shared_qkv_acc_f32_rr", fake_fa_func
+    )
 
 
 def get_mha_tflops(
@@ -342,7 +374,9 @@ def run_benchmark(
     mean_time = total_time / iters
     mean_secs = total_secs / iters
 
-    TFLOPS = get_mha_tflops(B, H, N, D, mean_secs, only_matmul=args.only_flops_matmul)
+    TFLOPS = get_mha_tflops(
+        B, H, N, D, mean_secs, only_matmul=args.only_flops_matmul
+    )
     out_info = f"{tag}"
     out_val_first = out.flatten()[:3].detach().cpu().numpy().tolist()
     out_val_last = out.flatten()[-3:].detach().cpu().numpy().tolist()
@@ -562,17 +596,41 @@ for B, H, N, D in BHNDs:
     out_unfused, _ = run_benchmark(unfused_standard_attn, q, k, v, "(unfused)")
     # Split-KV
     out_mma_split_kv1, _ = run_benchmark(
-        lib.flash_attn_mma_stages_split_kv, q, k, v, "mma(split-kv+stage1)", o, stages=1
+        lib.flash_attn_mma_stages_split_kv,
+        q,
+        k,
+        v,
+        "mma(split-kv+stage1)",
+        o,
+        stages=1,
     )
     out_mma_split_kv2, _ = run_benchmark(
-        lib.flash_attn_mma_stages_split_kv, q, k, v, "mma(split-kv+stage2)", o, stages=2
+        lib.flash_attn_mma_stages_split_kv,
+        q,
+        k,
+        v,
+        "mma(split-kv+stage2)",
+        o,
+        stages=2,
     )
     # Split-Q
     out_mma_split_q1, _ = run_benchmark(
-        lib.flash_attn_mma_stages_split_q, q, k, v, "mma(split-q+stage1)", o, stages=1
+        lib.flash_attn_mma_stages_split_q,
+        q,
+        k,
+        v,
+        "mma(split-q+stage1)",
+        o,
+        stages=1,
     )
     out_mma_split_q2, _ = run_benchmark(
-        lib.flash_attn_mma_stages_split_q, q, k, v, "mma(split-q+stage2)", o, stages=2
+        lib.flash_attn_mma_stages_split_q,
+        q,
+        k,
+        v,
+        "mma(split-q+stage2)",
+        o,
+        stages=2,
     )
     # Split-Q + Shared KV SMEM + Swizzle
     out_mma_share_kv1, _ = run_benchmark(
@@ -1049,7 +1107,9 @@ for B, H, N, D in BHNDs:
     )
     # FA2, SDPA official
     out_flash, _ = run_benchmark(flash_attn_func, fq, fk, fv, "(flash)")
-    out_sdpa, _ = run_benchmark(partial(sdpa, use_flash=(D <= 256)), q, k, v, "(sdpa)")
+    out_sdpa, _ = run_benchmark(
+        partial(sdpa, use_flash=(D <= 256)), q, k, v, "(sdpa)"
+    )
     pretty_print_line()
 
     torch.cuda.synchronize()
@@ -1058,10 +1118,16 @@ for B, H, N, D in BHNDs:
             pretty_print_line()
             # Split-KV
             check_all_close(
-                out_flash, out_mma_split_kv1, "out_mma_split_kv1", args.check_all
+                out_flash,
+                out_mma_split_kv1,
+                "out_mma_split_kv1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_split_kv2, "out_mma_split_kv2", args.check_all
+                out_flash,
+                out_mma_split_kv2,
+                "out_mma_split_kv2",
+                args.check_all,
             )
             # Split-Q
             check_all_close(
@@ -1072,10 +1138,16 @@ for B, H, N, D in BHNDs:
             )
             # Split-Q + Shared KV SMEM
             check_all_close(
-                out_flash, out_mma_share_kv1, "out_mma_share_kv1", args.check_all
+                out_flash,
+                out_mma_share_kv1,
+                "out_mma_share_kv1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_share_kv2, "out_mma_share_kv2", args.check_all
+                out_flash,
+                out_mma_share_kv2,
+                "out_mma_share_kv2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,
@@ -1090,10 +1162,16 @@ for B, H, N, D in BHNDs:
                 args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_share_kv_sq1, "out_mma_share_kv_sq1", args.check_all
+                out_flash,
+                out_mma_share_kv_sq1,
+                "out_mma_share_kv_sq1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_share_kv_sq2, "out_mma_share_kv_sq2", args.check_all
+                out_flash,
+                out_mma_share_kv_sq2,
+                "out_mma_share_kv_sq2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,
@@ -1121,10 +1199,16 @@ for B, H, N, D in BHNDs:
             )
             # Split-Q + Fully Shared QKV SMEM
             check_all_close(
-                out_flash, out_mma_share_qkv1, "out_mma_share_qkv1", args.check_all
+                out_flash,
+                out_mma_share_qkv1,
+                "out_mma_share_qkv1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_share_qkv2, "out_mma_share_qkv2", args.check_all
+                out_flash,
+                out_mma_share_qkv2,
+                "out_mma_share_qkv2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,
@@ -1176,10 +1260,16 @@ for B, H, N, D in BHNDs:
             )
             # Split-Q + QK Fine-grained Tiling
             check_all_close(
-                out_flash, out_mma_tiling_qk1, "out_mma_tiling_qk1", args.check_all
+                out_flash,
+                out_mma_tiling_qk1,
+                "out_mma_tiling_qk1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_tiling_qk2, "out_mma_tiling_qk2", args.check_all
+                out_flash,
+                out_mma_tiling_qk2,
+                "out_mma_tiling_qk2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,
@@ -1231,10 +1321,16 @@ for B, H, N, D in BHNDs:
             )
             # Split-Q + Fully QKV Fine-grained Tiling
             check_all_close(
-                out_flash, out_mma_tiling_qkv1, "out_mma_tiling_qkv1", args.check_all
+                out_flash,
+                out_mma_tiling_qkv1,
+                "out_mma_tiling_qkv1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_tiling_qkv2, "out_mma_tiling_qkv2", args.check_all
+                out_flash,
+                out_mma_tiling_qkv2,
+                "out_mma_tiling_qkv2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,
@@ -1322,10 +1418,16 @@ for B, H, N, D in BHNDs:
             )
             # Others, O s2g, etc.
             check_all_close(
-                out_flash, out_mma_share_kv_rr1, "out_mma_share_kv_rr1", args.check_all
+                out_flash,
+                out_mma_share_kv_rr1,
+                "out_mma_share_kv_rr1",
+                args.check_all,
             )
             check_all_close(
-                out_flash, out_mma_share_kv_rr2, "out_mma_share_kv_rr2", args.check_all
+                out_flash,
+                out_mma_share_kv_rr2,
+                "out_mma_share_kv_rr2",
+                args.check_all,
             )
             check_all_close(
                 out_flash,

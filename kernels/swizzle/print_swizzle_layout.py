@@ -121,15 +121,21 @@ def print_smem_swizzle_layout(
         max_bank_str_len = 0
         if logical_col_stride >= 16 and (not use_logical_col_stride):
             for k in range(int(logical_col_stride / 16)):
-                for j in range(banks_start, banks_end, banks_per_num_elems_per_128b):
+                for j in range(
+                    banks_start, banks_end, banks_per_num_elems_per_128b
+                ):
                     curr_bank_str = (
                         f"b{j:>2}~{j + banks_per_num_elems_per_128b - 1:<2}|"
                     )
                     max_bank_str_len = max(max_bank_str_len, len(curr_bank_str))
                     bank_layout_str += curr_bank_str
         else:
-            for j in range(banks_start, banks_end, banks_per_num_elems_per_128b):
-                curr_bank_str = f"b{j:>2}~{j + banks_per_num_elems_per_128b - 1:<2}|"
+            for j in range(
+                banks_start, banks_end, banks_per_num_elems_per_128b
+            ):
+                curr_bank_str = (
+                    f"b{j:>2}~{j + banks_per_num_elems_per_128b - 1:<2}|"
+                )
                 max_bank_str_len = max(max_bank_str_len, len(curr_bank_str))
                 bank_layout_str += curr_bank_str
 
@@ -195,7 +201,8 @@ def print_smem_swizzle_layout(
             print("-" * str_len)
             pretty_print_line("swizzle layout", width=str_len)
             pretty_print_line(
-                f"logical col 0~{logical_col_stride}, " f"step {num_elems_per_128b}",
+                f"logical col 0~{logical_col_stride}, "
+                f"step {num_elems_per_128b}",
                 width=str_len,
             )
             pretty_print_line(
@@ -219,7 +226,9 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=16)
     parser.add_argument("--smem-padding", "--pad", type=int, default=0)
-    parser.add_argument("--num-elems-per-128b", "--num-elems", type=int, default=8)
+    parser.add_argument(
+        "--num-elems-per-128b", "--num-elems", type=int, default=8
+    )
     parser.add_argument(
         "--logical-col-stride", "--logical-col", "--col", type=int, default=64
     )
