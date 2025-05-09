@@ -1,4 +1,13 @@
 # Relu
+## ReLU 激活函数公式
+
+ReLU（Rectified Linear Unit）激活函数的数学表达式为：
+
+$$
+\mathrm{ReLU}(x) = \max(0, x)
+$$
+
+其中 $x$ 为输入值，$\mathrm{ReLU}(x)$ 表示输出值。当 $x > 0$ 时，输出为 $x$；当 $x \leq 0$ 时，输出为 $0$。
 
 ## 0x00 说明
 

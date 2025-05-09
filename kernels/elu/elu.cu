@@ -176,6 +176,21 @@ TORCH_BINDING_ELU(f16x2, torch::kHalf, half, 2)
 TORCH_BINDING_ELU(f16x8, torch::kHalf, half, 8)
 TORCH_BINDING_ELU(f16x8_pack, torch::kHalf, half, 8)
 
+/**
+ * @brief PyTorch 扩展模块初始化函数，注册 ELU 相关 CUDA 内核的 Python 绑定接口。
+ *
+ * 该模块将以下函数注册为 Python 可调用接口：
+ * - elu_f32
+ * - elu_f32x4
+ * - elu_f16
+ * - elu_f16x2
+ * - elu_f16x8
+ * - elu_f16x8_pack
+ *
+ * 每个接口对应不同数据类型和打包方式的 ELU 激活 CUDA 实现。
+ *
+ * @param m pybind11 模块对象，由 PYBIND11_MODULE 宏自动传入。
+ */
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   TORCH_BINDING_COMMON_EXTENSION(elu_f32)
   TORCH_BINDING_COMMON_EXTENSION(elu_f32x4)

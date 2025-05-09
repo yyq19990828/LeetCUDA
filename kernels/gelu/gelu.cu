@@ -24,8 +24,8 @@
 #define HALF_1 __float2half(1.0f)
 #define HALF_2 __float2half(2.0f)
 #define HALF_DIV2 __float2half(0.5f)
-// to clear the error among self defined gelu and pytorch gelu. Calculate
-// $\sqrt{\frac{\pi}{2}}$ by $\sqrt{2 * \pi} / 2$
+// 为了消除自定义gelu和pytorch gelu之间的误差，
+// 通过$\sqrt{2 * \pi} / 2$计算$\sqrt{\frac{\pi}{2}}$
 #define HALF_SQRT_2_PI                                                         \
   __float2half(M_SQRT2) * __float2half(M_2_SQRTPI) * HALF_DIV2
 #define HALF_V_APP __float2half(0.044715f)
@@ -33,11 +33,11 @@
 #define HALF_GELU_OPS gelu_tanh_approximate
 #define GELU_OPS gelu_tanh_approximate
 
-// There is no half presicion operation like sinh, cosh, tanh. [Half Math
-// Functions](https://docs.nvidia.com/cuda/cuda-math-api/group__CUDA__MATH____HALF__FUNCTIONS.html#group__CUDA__MATH____HALF__FUNCTIONS)
-// $$ tanh(x) = \frac{exp^{2x} - 1}{exp^{2x} + 1}$$
-// But ops above will introduce error.
-// pytorch transform type while do tanh operator which include in the
+// 没有类似 sinh、cosh、tanh 的半精度运算。
+// [半精度数学函数](https://docs.nvidia.com/cuda/cuda-math-api/group__CUDA__MATH____HALF__FUNCTIONS.html#group__CUDA__MATH____HALF__FUNCTIONS)
+//* $$ tanh(x) = \frac{exp^{2x} - 1}{exp^{2x} + 1}$$
+// 但是上面的操作会引入误差。
+// pytorch 在执行 tanh 运算符时转换类型，该运算符包含在
 // [pytorch/c10/util/BFloat16-math.h](https://github.com/pytorch/pytorch/blob/main/c10/util/BFloat16-math.h)
 __inline__ __device__ half gelu_tanh_approximate(half x) {
   half x_cube = x * x * x;

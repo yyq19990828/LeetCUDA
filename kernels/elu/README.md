@@ -1,6 +1,17 @@
 # Elu
-
 ## 0x00 说明
+
+ELU（Exponential Linear Unit）激活函数的公式如下：
+
+$$
+\mathrm{ELU}(x) = 
+\begin{cases}
+x, & x > 0 \\
+\alpha (\exp(x) - 1), & x \leq 0
+\end{cases}
+$$
+
+其中 $\alpha$ 通常取值为 1。
 
 包含以下内容：
 

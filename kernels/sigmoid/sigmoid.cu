@@ -18,6 +18,7 @@
 #define LDST128BITS(value) (reinterpret_cast<float4 *>(&(value))[0])
 #define MAX_EXP_F32 88.3762626647949f
 #define MIN_EXP_F32 -88.3762626647949f
+//* 防止指数越界或下溢
 #define MAX_EXP_F16 __float2half(11.089866488461016f)
 #define MIN_EXP_F16 __float2half(-9.704060527839234f)
 
@@ -149,7 +150,7 @@ __global__ void sigmoid_f16x8_pack_kernel(half *x, half *y, int N) {
 
 // --------------------- PyTorch bindings for custom kernel
 // -----------------------
-#define STRINGFY(str) #str
+#define STRINGFY(str) #str //* #str表示字符串化操作
 #define TORCH_BINDING_COMMON_EXTENSION(func)                                   \
   m.def(STRINGFY(func), &func, STRINGFY(func));
 

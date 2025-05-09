@@ -1,5 +1,7 @@
 # Sigmoid
 
+$\text{Sigmoid}(x) = 1/(1+e^{-x})$
+
 ## 0x00 说明
 
 包含以下内容：

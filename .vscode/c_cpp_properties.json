@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/lib/python3.10/dist-packages/torch/include/**"
+            ],
+            "defines": [],
+            "cStandard": "c17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "cppStandard": "c++17",
+            "compilerPath": "/usr/bin/g++"
+        }
+    ],
+    "version": 4
+}

@@ -11,6 +11,21 @@
 #include <vector>
 
 #define WARP_SIZE 32
+/**
+ * @brief 将给定变量的地址强制类型转换为 int4 指针，并获取其第一个 int4 元素。
+ *
+ * 该宏定义用于将任意类型的变量 value 的地址 reinterpret_cast（重新解释）为 int4* 类型，
+ * 然后通过 [0] 取出第一个 int4 元素。int4 是 CUDA 中的一个结构体，包含四个 int 分量（x, y, z, w），
+ * 常用于向量化操作以提升内存访问效率。
+ *
+ * 注意事项：
+ * 1. value 变量的内存布局必须满足 int4 对齐要求（16 字节对齐），否则可能导致未定义行为。
+ * 2. 该宏通常用于需要将数据块按 int4 方式批量处理的场景，如内存拷贝或向量化计算。
+ * 3. 使用时需确保 value 的类型和大小适合 int4 的 reinterpret_cast 操作。
+ */
+//* reinterpret_cast<...>适用于指向一个完全不同、但内存布局兼容
+//*（或你明确知道如何处理其布局）的类型的指针时, 可以通过一次操作
+//* 处理多个数据
 #define INT4(value) (reinterpret_cast<int4 *>(&(value))[0])
 #define FLOAT4(value) (reinterpret_cast<float4 *>(&(value))[0])
 #define HALF2(value) (reinterpret_cast<half2 *>(&(value))[0])
@@ -33,15 +48,18 @@ __device__ __forceinline__ float warp_reduce_sum_f32(float val) {
 // a: Nx1, b: Nx1, y=sum(elementwise_mul(a,b))
 template <const int NUM_THREADS = 256>
 __global__ void dot_prod_f32_f32_kernel(float *a, float *b, float *y, int N) {
-  int tid = threadIdx.x;
-  int idx = blockIdx.x * NUM_THREADS + tid;
+  int tid = threadIdx.x; //* 线程快内的相对位置
+  int idx = blockIdx.x * NUM_THREADS + tid; //* 绝对位置
+  
+  //* constexpr 表示编译器在编译时就能计算出值
   constexpr int NUM_WARPS = (NUM_THREADS + WARP_SIZE - 1) / WARP_SIZE;
+  //* __shared__ 表示共享内存, 对于每个线程块, 共享内存是共享的
   __shared__ float reduce_smem[NUM_WARPS];
 
   // keep the data in register is enough for warp operaion.
   float prod = (idx < N) ? a[idx] * b[idx] : 0.0f;
-  int warp = tid / WARP_SIZE;
-  int lane = tid % WARP_SIZE;
+  int warp = tid / WARP_SIZE; //* 目前线程块内的warp编号
+  int lane = tid % WARP_SIZE; //* 目前线程块内的warp内的线程编号
   // perform warp sync reduce.
   prod = warp_reduce_sum_f32<WARP_SIZE>(prod);
   // warp leaders store the data to shared memory.
@@ -93,6 +111,7 @@ template <const int kWarpSize = WARP_SIZE>
 __device__ __forceinline__ half warp_reduce_sum_f16_f16(half val) {
 #pragma unroll
   for (int mask = kWarpSize >> 1; mask >= 1; mask >>= 1) {
+    //* __hadd() 在半精度数上执行加法操作, 效率比直接使用加法高
     val = __hadd(val, __shfl_xor_sync(0xffffffff, val, mask));
     // val += __shfl_xor_sync(0xffffffff, val, mask);
   }
