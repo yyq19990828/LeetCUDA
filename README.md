@@ -25,7 +25,7 @@
 
 <div align="center">
   <p align="center">
-    <a href="#contribute">🔥🔥 PR Welcome: Add Your Kernel to LeetCUDA! Let's make LeetCUDA Awesome together! 🎉🎉</a>
+    <a href="#contribute">🔥🔥 PR Welcome: Add Your Kernel to LeetCUDA! Let's make it Awesome together! 🎉🎉</a>
   </p>
 </div>
 
