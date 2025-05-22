@@ -1,8 +1,12 @@
 <!---
   <img src='https://github.com/user-attachments/assets/9306862b-2a30-4a87-bb33-0fde9e9d7cea' width=250 >
-      <a href="#cuda-kernel">📚200+ CUDA Kernels</a> | <a href="#my-blogs-part-1"> 📚100+ LLM/CUDA Blogs</a> | <a href="#hgemm-tensorcores-mma-bench"> ⚡️HGEMM MMA</a> | <a href="#fa-mma-bench"> ⚡️FA-2 MMA </a> <p>
+      <a href="#cuda-kernel">📚200+ CUDA Kernels</a> | <a href="#my-blogs-part-1"> 📚100+ LLM/CUDA Blogs</a> | <a href="#HGEMM-bench"> ⚡️HGEMM MMA</a> | <a href="#fa-mma-bench"> ⚡️FA-2 MMA </a> <p>
 <img src='https://github.com/user-attachments/assets/b2578723-b7a7-4d8f-bcd1-5008947b808a' >
-
+<div align="center">
+  <p align="center">
+    <a href="#contribute">愿以青衿涉险苦，为君先踏棘荆途。他年若览通衢阔，莫忘初逢问路吾。</a>
+  </p>
+</div>
 --->
 
 <div align="center">
@@ -21,7 +25,8 @@
  </div>
 </div>
 
-📚 **LeetCUDA**: It includes **Tensor/CUDA Cores, TF32/F16/BF16/F8**, [📖200+ CUDA Kernels🔥](#cuda-kernel) with PyTorch, [📖100+ LLM/CUDA🔥](#my-blogs-part-1) blogs, [📖HGEMM⚡️](./kernels/hgemm) which can achieve `98%~100%` TFLOPS of **cuBLAS**, and [📖flash-attn-mma⚡️](./kernels/flash-attn) using Tensor Cores with pure MMA PTX.
+📚 **LeetCUDA**: It includes **Tensor/CUDA Cores, TF32/F16/BF16/F8**, [📖200+ CUDA Kernels🔥](#cuda-kernel) with PyTorch, [📖100+ LLM/CUDA🔥](#my-blogs-part-1) blogs, [📖HGEMM⚡️](./kernels/hgemm) which can achieve `98%~100%` TFLOPS of **cuBLAS**, and [📖flash-attn⚡️](./kernels/flash-attn) using Tensor Cores with pure MMA PTX. ♥️ Please consider to leave a ⭐️ Star to support me, my bro ~ ♥️
+
 <div align="center">
   <p align="center">
     <a href="#contribute">🔥🔥 PR Welcome: Add Your Kernel to LeetCUDA! Let's make it Awesome together! 🎉🎉</a>
@@ -31,7 +36,7 @@
 ## 📖 News 🔥🔥
 <div id="news"></div>
 
-- [2025-01-08]: [📚Split Q + Fully QKV Fine-grained Tiling](#mma-tiling-qkv) has been refactored into 🤖[ffpa-attn-mma](https://github.com/xlite-dev/ffpa-attn-mma.git): 📚FFPA - Yet another Faster Flash Prefill Attention with O(1)🎉SRAM complexity for headdim > 256, **1.8x~3x**🎉faster than SDPA EA: [📈L20 ~1.9x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-l20), [📈 A30 ~1.8x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-a30), [📈3080 ~2.9x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-3080), [📈4090 ~2.1x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-4090).
+- [2025-01-08]: [📚Split Q + Fully QKV Fine-grained Tiling](#mma-tiling-qkv) has been refactored into 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn.git): 📚FFPA - Yet another Faster Flash Prefill Attention with O(1)🎉SRAM complexity for headdim > 256, **1.8x~3x**🎉faster than SDPA EA: [📈L20 ~1.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-l20), [📈 A30 ~1.8x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-a30), [📈3080 ~2.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-3080), [📈4090 ~2.1x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-4090).
 
 <div align='center'>
   <img src='https://github.com/user-attachments/assets/cba2edce-ac0d-412e-823c-7eea2cc63f83' height="170px" width="270px">
@@ -39,7 +44,7 @@
   <img src='https://github.com/user-attachments/assets/65a8d564-8fa7-4d66-86b9-e238feb86143' height="170px" width="270px">
 </div>
 
-- [2024-12-02]: HGEMM MMA kernels has been refactored into 🤖[hgemm-tensorcores-mma](https://github.com/xlite-dev/hgemm-tensorcores-mma.git): ⚡️Write HGEMM from scratch using Tensor Cores with WMMA, MMA and CuTe API, achieve peak⚡️ performance.
+- [2024-12-02]: HGEMM MMA kernels has been refactored into 🤖[HGEMM](https://github.com/xlite-dev/HGEMM.git): ⚡️Write HGEMM from scratch using Tensor Cores with WMMA, MMA and CuTe API, achieve peak⚡️ performance.
 
 <div align='center'>
   <img src='https://github.com/user-attachments/assets/71927ac9-72b3-4ce9-b0e2-788b5885bc99' height="170px" width="270px">
@@ -49,19 +54,25 @@
 
 ## 📖 Contents
 <div id="contents"></div>
+<!---
+- [📖 HGEMM-MMA 🎉🎉](#HGEMM-bench)
+- [📖 FlashAttention-MMA 🎉🎉](#fa-mma-bench)
+- [📖 200+ CUDA Kernels 🔥🔥](#cuda-kernel)
+- [📖 100+ 高性能计算文章 💡💡](#my-blogs-part-1)
+- [📖 How to Contribute 👀👇](#contribute)
+--->
 
-- [📖 How to Contribute? 👀👇](#contribute)
-- [📖 HGEMM-MMA 🎉🎉](#hgemm-tensorcores-mma-bench)
-  - [📚 CUDA/Tensor Cores](#hgemm-tensorcores-mma-bench)
-  - [📚 Tile Block(Br, Bc)](#hgemm-tensorcores-mma-bench)
-  - [📚 Tile MMAs/Warps](#hgemm-tensorcores-mma-bench)
-  - [📚 Pack LDST(128 bits)](#hgemm-tensorcores-mma-bench)
-  - [📚 Multi Stages(2~4)](#hgemm-tensorcores-mma-bench)
-  - [📚 Block/Warp Swizzle](#hgemm-tensorcores-mma-bench)
-  - [📚 SMEM Swizzle](#hgemm-tensorcores-mma-bench)
-  - [📚 Register Double Buffers](#hgemm-tensorcores-mma-bench)
-  - [📚 Collective Store(Shfl)](#hgemm-tensorcores-mma-bench)
-  - [📚 Layout NN/TN](#hgemm-tensorcores-mma-bench)
+- [📖 HGEMM-MMA 🎉🎉](#HGEMM-bench)
+  - [📚 CUDA/Tensor Cores](#HGEMM-bench)
+  - [📚 Tile Block(Br, Bc)](#HGEMM-bench)
+  - [📚 Tile MMAs/Warps](#HGEMM-bench)
+  - [📚 Pack LDST(128 bits)](#HGEMM-bench)
+  - [📚 Multi Stages(2~4)](#HGEMM-bench)
+  - [📚 Block/Warp Swizzle](#HGEMM-bench)
+  - [📚 SMEM Swizzle](#HGEMM-bench)
+  - [📚 Register Double Buffers](#HGEMM-bench)
+  - [📚 Collective Store(Shfl)](#HGEMM-bench)
+  - [📚 Layout NN/TN](#HGEMM-bench)
 - [📖 FlashAttention-MMA 🎉🎉](#fa-mma-bench)
   - [📚 Split KV (Basic, FA-1)](#mma-split-kv)
   - [📚 Split Q (Faster, FA-2)](#mma-split-q)
@@ -86,12 +97,14 @@
   - [📚 CuTe系列详解与实践](#other-blogs)
   - [📚 GPU指令集架构精解](#other-blogs)
   - [📚 GPU通信架构精解](#other-blogs)
+- [📖 How to Contribute 👀👇](#contribute)
+
 
 ## 📖 HGEMM Benchmark 🎉🎉
 
-<div id="hgemm-tensorcores-mma-bench"></div>
+<div id="HGEMM-bench"></div>
 
-Currently, on NVIDIA L20, RTX 4090 and RTX 3080 Laptop, compared with cuBLAS's default Tensor Cores algorithm, the `HGEMM (WMMA/MMA/CuTe)` in this repo (`blue`🔵) can achieve `98%~100%` of its (`orange`🟠) performance. Please check [toy-hgemm library⚡️⚡️](./kernels/hgemm) or [hgemm-tensorcores-mma⚡️⚡️](https://github.com/xlite-dev/hgemm-tensorcores-mma) repo for more details.
+Currently, on NVIDIA L20, RTX 4090 and RTX 3080 Laptop, compared with cuBLAS's default Tensor Cores algorithm, the `HGEMM (WMMA/MMA/CuTe)` in this repo (`blue`🔵) can achieve `98%~100%` of its (`orange`🟠) performance. Please check [toy-hgemm library⚡️⚡️](./kernels/hgemm) or [HGEMM⚡️⚡️](https://github.com/xlite-dev/HGEMM) repo for more details.
 
 ![toy-hgemm-library](https://github.com/user-attachments/assets/962bda14-b494-4423-b8eb-775da9f5503d)
 
@@ -107,7 +120,7 @@ Currently, on NVIDIA L20, RTX 4090 and RTX 3080 Laptop, compared with cuBLAS's d
 
 <div id="fa-mma-bench"></div>
 
-I have also implemented **FlashAttention-2** using pure MMA PTX instructions, which supports features such as Multi-Stages, Tile MMA, Tile Warp, Shared KV SMEM, **Fully Shared QKV SMEM**, **Prefetch Q s2r**, **Prefetch K/V g2s**, **QKV Fine-grained Tiling**, Collective Store, etc. Please refer to [flash-attention-mma⚡️⚡️](./kernels/flash-attn) for more details.
+I have also implemented **FlashAttention-2** using pure MMA PTX instructions, which supports features such as Multi-Stages, Tile MMA, Tile Warp, Shared KV SMEM, **Fully Shared QKV SMEM**, **Prefetch Q s2r**, **Prefetch K/V g2s**, **QKV Fine-grained Tiling**, Collective Store, etc. Please refer to [flash-attn⚡️⚡️](./kernels/flash-attn) for more details.
 
 ![flash-attn-mma](https://github.com/user-attachments/assets/6f66796d-44d5-4ec1-b224-af997bd152b2)
 
@@ -118,7 +131,7 @@ I have also implemented **FlashAttention-2** using pure MMA PTX instructions, wh
 |✔️Tile Warps|✔️Multi Stages(1/2)|✔️Collective Store(Shfl)|✔️**Split KV/Q**|
 |✔️**Shared QKV** SMEM|✔️**Prefetch Q** s2r|✔️**Prefetch KV** g2s|✔️**QKV Fine-grained Tiling**|
 
-Currently, for small-scale attention `(B<=4, H <=48, SeqLen <= 8192, D <= 64)` it can run faster than FA2/SDPA on some Devices. For example, on NVIDIA RTX 3080 Laptop, [📚 Split Q + Fully Shared QKV SMEM](#mma-share-qkv) method can achieve **55 TFLOPS (D=64)** that almost **~1.5x** 🎉 faster than FA2. On NVIDIA L20, 🤖[ffpa-attn-mma](https://github.com/xlite-dev/ffpa-attn-mma) method can achieve **104 TFLOPS (D=512)** that almost **~1.8x** 🎉 faster than SDPA (EFFICIENT ATTENTION). However, for large-scale attention, there remains a performance gap. Stay tuned for updates ~ (MMA Acc F16/F32, softmax Acc F32 vs FA2 MMA/softmax Acc F32, 👇Benchmark)
+Currently, for small-scale attention `(B<=4, H <=48, SeqLen <= 8192, D <= 64)` it can run faster than FA2/SDPA on some Devices. For example, on NVIDIA RTX 3080 Laptop, [📚 Split Q + Fully Shared QKV SMEM](#mma-share-qkv) method can achieve **55 TFLOPS (D=64)** that almost **~1.5x** 🎉 faster than FA2. On NVIDIA L20, 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn) method can achieve **104 TFLOPS (D=512)** that almost **~1.8x** 🎉 faster than SDPA (EFFICIENT ATTENTION). However, for large-scale attention, there remains a performance gap. Stay tuned for updates ~ (MMA Acc F16/F32, softmax Acc F32 vs FA2 MMA/softmax Acc F32, 👇Benchmark)
 
 |Algorithm| (B,H,N,D) | RTX 3080 Laptop | L20 | RTX 4090 |
 |:---:|:---:|:---:|:---:|:---:|
@@ -127,10 +140,10 @@ Currently, for small-scale attention `(B<=4, H <=48, SeqLen <= 8192, D <= 64)` i
 |FlashAttention-2|(1,48,8192,64)|37 TFLOPS|109 TFLOPS|163 TFLOPS|
 |share-qkv+stage2|(1,48,8192,64)|**48 TFLOPS**|107 TFLOPS|**224 TFLOPS**|
 |SDPA(EFFICIENT ATTENTION)|(1,48,8192,512)|16 TFLOPS|58 TFLOPS|85 TFLOPS|
-|🤖[ffpa-attn-mma](https://github.com/xlite-dev/ffpa-attn-mma)|(1,48,8192,512)|**39 TFLOPS**|**104 TFLOPS**|**200 TFLOPS**|
+|🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn)|(1,48,8192,512)|**39 TFLOPS**|**104 TFLOPS**|**200 TFLOPS**|
 |Precision Errors vs FA2/SDPA| / | max: < ~1e-3 | min: ~0.0 | mean: < ~1e-5 |
 
-The `Split KV` and `Split Q` implementations have been carried out in [flash-attention-mma⚡️⚡️](./kernels/flash-attn) for performance comparison. The `Split KV` method, which involves splitting all QKV across MMA (Warps), is slower than `Split Q` method, which splitting Q across MMA(Warps) and keep access KV for all MMA(Warps).
+The `Split KV` and `Split Q` implementations have been carried out in [flash-attn⚡️⚡️](./kernels/flash-attn) for performance comparison. The `Split KV` method, which involves splitting all QKV across MMA (Warps), is slower than `Split Q` method, which splitting Q across MMA(Warps) and keep access KV for all MMA(Warps).
 
 - 📚 Split KV (Basic, FlashAttention-1)
 <div id="mma-split-kv"></div>
@@ -208,7 +221,7 @@ __global__ void // Q, K, V, O -> [B, H, N, D]
 flash_attn_mma_stages_split_q_tiling_qkv_kernel(half* Q, half* K, half* V, half* O, ...);
 ```
 
-💡NOTE: [📚Split Q + Fully QKV Fine-grained Tiling](#mma-tiling-qkv) has been refactored into 🤖[ffpa-attn-mma](https://github.com/xlite-dev/ffpa-attn-mma).
+💡NOTE: [📚Split Q + Fully QKV Fine-grained Tiling](#mma-tiling-qkv) has been refactored into 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn).
 
 ## ©️Citations🎉🎉
 
@@ -418,6 +431,7 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 
 |📖 CUDA Kernel| 📖 Elem DType| 📖 Acc DType| 📖 Docs | 📖 Level |
 |:---|:---|:---|:---|:---|
+| ✔️ [flash_attn_cute(naive)](./kernels/flash-attn/cutlass/flash_attn_cute.cu)|f16|f32|[link](./kernels/flash-attn/)|⭐️⭐️⭐️|
 | ✔️ [How to implement MMA smem swizzle*](./kernels/swizzle/mma_simple_swizzle.cu)|f16|f16|[link](./kernels/swizzle)|⭐️⭐️⭐️|
 | ✔️ [flash_attn_mma_stages_split_kv*](./kernels/flash-attn/mma/basic/flash_attn_mma_split_kv.cu)|f16|f16|[link](./kernels/flash-attn)|⭐️⭐️⭐️⭐️|
 | ✔️ [flash_attn_mma_stages_split_q*](./kernels/flash-attn/mma/basic/flash_attn_mma_split_q.cu)|f16|f16|[link](./kernels/flash-attn)|⭐️⭐️⭐️⭐️|
@@ -453,17 +467,17 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 
 |📖 CUDA Kernel| 📖 Elem DType| 📖 Acc DType| 📖 Docs | 📖 Level |
 |:---|:---|:---|:---|:---|
-| ✔️ [ffpa_mma_stages_split_q_L1_F16F16F16](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L1.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ✔️ [ffpa_mma_stages_split_q_L1_F16F16F32](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L1.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ✔️ [ffpa_mma_stages_split_q_L1_mixed_acc](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L1.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L2_F16F16F16](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L2.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L2_F16F16F32](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L2.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L2_mixed_acc](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L2.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L3_F16F16F16](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L3.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L3_F16F16F32](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L3.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
-| ⚠️ [ffpa_mma_stages_split_q_L3_mixed_acc](https://github.com/xlite-dev/ffpa-attn-mma/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L3.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn-mma)|⭐️⭐️⭐️⭐️|
+| ✔️ [ffpa_mma_stages_split_q_L1_F16F16F16](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L1.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ✔️ [ffpa_mma_stages_split_q_L1_F16F16F32](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L1.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ✔️ [ffpa_mma_stages_split_q_L1_mixed_acc](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L1.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L2_F16F16F16](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L2.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L2_F16F16F32](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L2.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L2_mixed_acc](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L2.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L3_F16F16F16](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F16_L3.cu)|f16|f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L3_F16F16F32](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L3.cu)|f16|f32|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
+| ⚠️ [ffpa_mma_stages_split_q_L3_mixed_acc](https://github.com/xlite-dev/ffpa-attn/blob/main/csrc/cuffpa/ffpa_attn_F16F16F32_L3.cu)|f16|QK f32, PV f16|[link](https://github.com/xlite-dev/ffpa-attn)|⭐️⭐️⭐️⭐️|
 
-💡NOTE: 🤖[ffpa-attn-mma](https://github.com/xlite-dev/ffpa-attn-mma): 📚FFPA - Yet another Faster Flash Prefill Attention with O(1)🎉SRAM complexity for headdim > 256, **1.8x~3x**🎉faster than SDPA EA: [📈L20 ~1.9x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-l20), [📈 A30 ~1.8x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-a30), [📈3080 ~2.9x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-3080), [📈4090 ~2.1x↑🎉](https://github.com/xlite-dev/ffpa-attn-mma?tab=readme-ov-file#L1-bench-4090).
+💡NOTE: 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn): 📚FFPA - Yet another Faster Flash Prefill Attention with O(1)🎉SRAM complexity for headdim > 256, **1.8x~3x**🎉faster than SDPA EA: [📈L20 ~1.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-l20), [📈 A30 ~1.8x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-a30), [📈3080 ~2.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-3080), [📈4090 ~2.1x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-4090).
 
 ### 📚 Triton Kernel (OpenAI Triton) ([©️back👆🏻](#cuda-kernel))
 
@@ -482,6 +496,7 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 |📖 CUTLASS/CuTe Kernel| 📖 Elem DType| 📖 Acc DType| 📖 Docs | 📖 Level |
 |:---|:---|:---|:---|:---|
 | ✔️ [mat_transpose_cute](./kernels/mat-transpose/mat_transpose_cute.cu)|f32|/|[link](./kernels/mat-transpose/)|⭐️⭐️|
+| ✔️ [flash_attn_cute(naive)](./kernels/flash-attn/cutlass/flash_attn_cute.cu)|f16|f32|[link](./kernels/flash-attn/)|⭐️⭐️⭐️|
 | ✔️ [hgemm_mma_stages_swizzle{smem}...cute*](./kernels/hgemm/cutlass/hgemm_mma_stage_tn_cute.cu)|f16|f16|[link](./kernels/hgemm/)|⭐️⭐️⭐️|
 
 ## 📖 100+ 高性能计算与分布式-技术博客
@@ -494,7 +509,8 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 |:---|:---|:---|
 | [[Triton编程][基础]📖Triton极简入门: Triton Vector Add](https://zhuanlan.zhihu.com/p/1902778199261291694)|@xlite-dev|⭐️⭐️⭐|
 | [[Triton编程][基础]📖Triton Fused Softmax Kernel详解: 从Python源码到PTX分析](https://zhuanlan.zhihu.com/p/1899562146477609112)|@xlite-dev|⭐️⭐️⭐|
-| [[Triton编程][进阶]📖图解vLLM Prefix Prefill Triton Kernel](https://zhuanlan.zhihu.com/p/695799736)|@xlite-dev|⭐️⭐️⭐️|
+| [[Triton编程][基础]📖vLLM Triton Merge Attention States Kernel详解](https://zhuanlan.zhihu.com/p/1904937907703243110)|@xlite-dev|⭐️⭐️⭐|
+| [[Triton编程][进阶]📖vLLM Prefix Prefill Triton Kernel图解](https://zhuanlan.zhihu.com/p/695799736)|@xlite-dev|⭐️⭐️⭐️|
 | [[张量/序列并行]📖序列并行: BPT、Ring-Attention及Striped-Attention笔记](https://zhuanlan.zhihu.com/p/6456708235)|@xlite-dev|⭐️⭐️⭐|
 | [[vLLM实践][算子]📖vLLM算子开发流程：”保姆级“详细记录](https://zhuanlan.zhihu.com/p/1892966682634473987)|@xlite-dev|⭐️⭐️⭐|
 | [[vLLM实践][万字]📖vLLM + DeepSeek-R1 671B 多机部署及修Bug笔记](https://zhuanlan.zhihu.com/p/29950052712)|@xlite-dev|⭐️⭐️⭐|

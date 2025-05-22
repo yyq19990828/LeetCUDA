@@ -114,8 +114,7 @@ __global__ void layer_norm_f32_kernel(float *x, float *y, float g, float b,
   variance = block_reduce_sum_f32<NUM_THREADS>(variance);
   // Block 中的第一个线程计算方差的倒数 (标准差的倒数) 并存储到共享内存
   if (tid == 0)
-    s_variance = rsqrtf(variance / ((float)K + epsilon));
-  // 同步 Block 内所有线程，确保方差的倒数已计算并存储到共享内存
+    s_variance = rsqrtf(variance / (float)K + epsilon);
   // wait for s_variance in shared memory to be ready for all threads
   __syncthreads();
   // 如果当前索引在有效范围内，则计算归一化后的值并存储到输出张量 y
@@ -169,8 +168,7 @@ __global__ void layer_norm_f32x4_kernel(float *x, float *y, float g, float b,
   variance = block_reduce_sum_f32<NUM_THREADS>(variance);
   // Block 中的第一个线程计算方差的倒数 (标准差的倒数) 并存储到共享内存
   if (tid == 0)
-    s_variance = rsqrtf(variance / ((float)K + epsilon));
-  // 同步 Block 内所有线程，确保方差的倒数已计算并存储到共享内存
+    s_variance = rsqrtf(variance / (float)K + epsilon);
   // wait for s_variance in shared memory to be ready for all threads
   __syncthreads();
   // 声明 float4 寄存器，用于存储归一化后的输出值
@@ -545,8 +543,7 @@ __global__ void layer_norm_f16_f32_kernel(half *x, half *y, float g, float b,
   variance = block_reduce_sum_f32<NUM_THREADS>(variance);
   // Block 中的第一个线程计算方差的倒数 (标准差的倒数, FP32) 并存储到共享内存
   if (tid == 0)
-    s_variance = rsqrtf(variance / ((float)K + epsilon));
-  // 同步 Block 内所有线程
+    s_variance = rsqrtf(variance / (float)K + epsilon);
   // wait for s_variance in shared memory to be ready for all threads
   __syncthreads();
   // 如果当前索引在有效范围内，则计算归一化后的值 (FP32) 并转换为 FP16 存储到输出张量 y
@@ -694,8 +691,7 @@ __global__ void layer_norm_f16x8_pack_f32_kernel(half *x, half *y, float g,
   variance = block_reduce_sum_f32<NUM_THREADS>(variance);
   // Block 中的第一个线程计算方差的倒数 (标准差的倒数, FP32) 并存储到共享内存
   if (tid == 0)
-    s_variance = rsqrtf(variance / ((float)K + epsilon));
-  // 同步 Block 内所有线程
+    s_variance = rsqrtf(variance / (float)K + epsilon);
   // wait for s_variance in shared memory to be ready for all threads
   __syncthreads();
 
