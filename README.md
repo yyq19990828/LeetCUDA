@@ -71,6 +71,14 @@
 - [📖 FlashAttention-MMA 🎉🎉](#fa-mma-bench)
 - [📖 200+ CUDA Kernels 🔥🔥](#cuda-kernel)
 - [📖 100+ 高性能计算文章 💡💡](#my-blogs-part-1)
+  - [📚 大模型推理优化原理](#my-blogs-part-1)
+  - [📚 大模型分布式训推原理](#my-blogs-part-1)
+  - [📚 CV/C++/模型部署优化](#my-blogs-part-1)
+  - [📚 CUDA优化入门与实践](#other-blogs)
+  - [📚 Tensor Cores入门教程](#other-blogs)
+  - [📚 CuTe系列详解与实践](#other-blogs)
+  - [📚 GPU指令集架构精解](#other-blogs)
+  - [📚 GPU通信架构精解](#other-blogs)
 - [📖 How to Contribute 👀👇](#contribute)
 --->
 
@@ -91,14 +99,6 @@
   - [📚 Triton ⭐⭐⭐️](#triton-kernel)
   - [📚 CUTLASS ⭐⭐⭐️](#cutlass-kernel)
 - [📖 100+ 高性能计算文章 💡💡](#my-blogs-part-1)
-  - [📚 大模型推理优化原理](#my-blogs-part-1)
-  - [📚 大模型分布式训推原理](#my-blogs-part-1)
-  - [📚 CV/C++/模型部署优化](#my-blogs-part-1)
-  - [📚 CUDA优化入门与实践](#other-blogs)
-  - [📚 Tensor Cores入门教程](#other-blogs)
-  - [📚 CuTe系列详解与实践](#other-blogs)
-  - [📚 GPU指令集架构精解](#other-blogs)
-  - [📚 GPU通信架构精解](#other-blogs)
 - [📖 How to Contribute 👀👇](#contribute)
 
 
