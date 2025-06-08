@@ -34,6 +34,18 @@
   </p>
 </div>
 
+## ©️Citations🎉🎉
+
+```BibTeX
+@misc{LeetCUDA@2025,
+  title={LeetCUDA: A Modern CUDA Learn Notes with PyTorch for Beginners},
+  url={https://github.com/xlite-dev/LeetCUDA.git},
+  note={Open-source software available at https://github.com/xlite-dev/LeetCUDA.git},
+  author={DefTruth and Many Others},
+  year={2025}
+}
+```
+
 
 ## 📖 News 🔥🔥
 <div id="news"></div>
@@ -53,6 +65,7 @@
   <img src='https://github.com/user-attachments/assets/05ef4f5e-d999-48ea-b58e-782cffb24e85' height="170px" width="270px">
   <img src='https://github.com/user-attachments/assets/9472e970-c083-4b31-9252-3eeecc761078' height="170px" width="270px">
 </div>
+
 
 ## 📖 Contents
 <div id="contents"></div>
@@ -98,7 +111,7 @@
   - [📚 Hard++ ⭐⭐⭐️⭐️⭐️](#cuda-kernel-hard-plus)
   - [📚 Triton ⭐⭐⭐️](#triton-kernel)
   - [📚 CUTLASS ⭐⭐⭐️](#cutlass-kernel)
-- [📖 100+ 高性能计算文章 💡💡](#my-blogs-part-1)
+- [📖 100+ LLM/CUDA Blogs 🔥](#my-blogs-part-1)
 - [📖 How to Contribute 👀👇](#contribute)
 
 
@@ -224,18 +237,6 @@ flash_attn_mma_stages_split_q_tiling_qkv_kernel(half* Q, half* K, half* V, half*
 ```
 
 💡NOTE: [📚Split Q + Fully QKV Fine-grained Tiling](#mma-tiling-qkv) has been refactored into 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn).
-
-## ©️Citations🎉🎉
-
-```BibTeX
-@misc{LeetCUDA@2025,
-  title={LeetCUDA: A Modern CUDA Learn Notes with PyTorch for Beginners},
-  url={https://github.com/xlite-dev/LeetCUDA},
-  note={Open-source software available at https://github.com/xlite-dev/LeetCUDA},
-  author={DefTruth etc},
-  year={2025}
-}
-```
 
 ## 📖 200+ CUDA Kernels 🔥🔥 (Easy -> Hard++) ([©️back👆🏻](#contents))
 
@@ -481,7 +482,7 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 
 💡NOTE: 🤖[ffpa-attn](https://github.com/xlite-dev/ffpa-attn): 📚FFPA - Yet another Faster Flash Prefill Attention with O(1)🎉SRAM complexity for headdim > 256, **1.8x~3x**🎉faster than SDPA EA: [📈L20 ~1.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-l20), [📈 A30 ~1.8x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-a30), [📈3080 ~2.9x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-3080), [📈4090 ~2.1x↑🎉](https://github.com/xlite-dev/ffpa-attn?tab=readme-ov-file#L1-bench-4090).
 
-### 📚 Triton Kernel (OpenAI Triton) ([©️back👆🏻](#cuda-kernel))
+### 📚 Triton Kernel (OpenAI Triton) ⭐️⭐️⭐️ ([©️back👆🏻](#cuda-kernel))
 
 <div id="triton-kernel"></div>
 
