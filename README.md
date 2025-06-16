@@ -50,7 +50,7 @@
 ## 📖 News 🔥🔥
 <div id="news"></div>
 
-- [2025-06-16]: [DBCache](https://github.com/vipshop/DBCache) is release! A **Training-free UNet-style** Cache Acceleration for Diffusion Transformers! Take a try!  
+- [2025-06-16]: [DBCache: Dual Block Caching](https://github.com/vipshop/DBCache) is release! A **Training-free UNet-style** Cache Acceleration for **Diffusion Transformers**! Feel free to take a try!  
 
 <div align='center'>
   <img src='https://github.com/user-attachments/assets/a5ec4320-d2f9-4254-888a-170b2d9e3784' height="170px">
