@@ -1,15 +1,3 @@
-<!---
-  <img src='https://github.com/user-attachments/assets/9306862b-2a30-4a87-bb33-0fde9e9d7cea' width=250 >
-      <a href="#cuda-kernel">📚200+ CUDA Kernels</a> | <a href="#my-blogs-part-1"> 📚100+ LLM/CUDA Blogs</a> | <a href="#HGEMM-bench"> ⚡️HGEMM MMA</a> | <a href="#fa-mma-bench"> ⚡️FA-2 MMA </a> <p>
-<img src='https://github.com/user-attachments/assets/b2578723-b7a7-4d8f-bcd1-5008947b808a' >
-<div align="center">
-  <p align="center">
-    <a href="#contribute">愿以青衿涉险苦，为君先踏棘荆途。他年若览通衢阔，莫忘初逢问路吾。</a>
-  </p>
-</div>
---->
-
-
 <div align="center">
   <p align="center">
     <h2>📚 LeetCUDA: Modern CUDA Learn Notes with PyTorch for Beginners 🐑</h2>
@@ -24,14 +12,14 @@
       <img src=https://img.shields.io/github/stars/xlite-dev/LeetCUDA.svg?style=social >
       <img src=https://img.shields.io/badge/Release-v3.0.6-brightgreen.svg >
       <img src=https://img.shields.io/badge/License-GPLv3.0-turquoise.svg >
- </div>
+  </div>
 </div>
 
 📚 **LeetCUDA**: It includes **Tensor/CUDA Cores, TF32/F16/BF16/F8**, [📖200+ CUDA Kernels🔥](#cuda-kernel) with PyTorch, [📖100+ LLM/CUDA🔥](#my-blogs-part-1) blogs, [📖HGEMM⚡️](./kernels/hgemm) which can achieve `98%~100%` TFLOPS of **cuBLAS**, and [📖flash-attn⚡️](./kernels/flash-attn) using Tensor Cores with pure MMA PTX. ♥️ Please consider to leave a ⭐️ Star to support me, my bro ~ ♥️
 
 <div align="center">
   <p align="center">
-    <a href="#contribute">🔥🔥 PR Welcome: Add Your Kernel to LeetCUDA! Let's make it Awesome together! 🎉🎉</a>
+    <a href="#contribute">🔥🔥 PR Welcome: Add Your Kernel to LeetCUDA! Let's make it Awesome together! 🎉🎉</a> <br>
     <a href=https://github.com/xlite-dev/LeetCUDA/graphs/contributors > <img src=https://opencollective.com/leetcuda/contributors.svg height=40px > </a>
   </p>
 </div>
@@ -52,7 +40,7 @@
 ## 📖 News 🔥🔥
 <div id="news"></div>
 
-- [2025-06-16]: [🤗CacheDiT](https://github.com/vipshop/cache-dit) is release! A **Training-free** and **Easy-to-use** Cache Acceleration Toolbox for Diffusion Transformers (**DBCache**, **DBPrune**, **FBCache**, etc)🔥. Feel free to take a try!  
+- [2025-06-16]: [🤗CacheDiT](https://github.com/vipshop/cache-dit) is release! A **Training-free** and **Easy-to-use** Cache Acceleration Toolbox for Diffusion Transformers (**DBCache**, **DBPrune**, **FBCache**, etc)🔥. Feel free to take a try!
 
 <div align='center'>
   <img src='https://github.com/user-attachments/assets/a5ec4320-d2f9-4254-888a-170b2d9e3784' height=170px>
@@ -77,31 +65,6 @@
 
 ## 📖 Contents
 <div id="contents"></div>
-<!---
-- [📖 HGEMM-MMA 🎉🎉](#HGEMM-bench)
-  - [📚 CUDA/Tensor Cores](#HGEMM-bench)
-  - [📚 Tile Block(Br, Bc)](#HGEMM-bench)
-  - [📚 Tile MMAs/Warps](#HGEMM-bench)
-  - [📚 Pack LDST(128 bits)](#HGEMM-bench)
-  - [📚 Multi Stages(2~4)](#HGEMM-bench)
-  - [📚 Block/Warp Swizzle](#HGEMM-bench)
-  - [📚 SMEM Swizzle](#HGEMM-bench)
-  - [📚 Register Double Buffers](#HGEMM-bench)
-  - [📚 Collective Store(Shfl)](#HGEMM-bench)
-  - [📚 Layout NN/TN](#HGEMM-bench)
-- [📖 FlashAttention-MMA 🎉🎉](#fa-mma-bench)
-- [📖 200+ CUDA Kernels 🔥🔥](#cuda-kernel)
-- [📖 100+ 高性能计算文章 💡💡](#my-blogs-part-1)
-  - [📚 大模型推理优化原理](#my-blogs-part-1)
-  - [📚 大模型分布式训推原理](#my-blogs-part-1)
-  - [📚 CV/C++/模型部署优化](#my-blogs-part-1)
-  - [📚 CUDA优化入门与实践](#other-blogs)
-  - [📚 Tensor Cores入门教程](#other-blogs)
-  - [📚 CuTe系列详解与实践](#other-blogs)
-  - [📚 GPU指令集架构精解](#other-blogs)
-  - [📚 GPU通信架构精解](#other-blogs)
-- [📖 How to Contribute 👀👇](#contribute)
---->
 
 - [📖 HGEMM-MMA 🎉🎉](#HGEMM-bench)
 - [📖 FlashAttention-MMA 🎉🎉](#fa-mma-bench)
@@ -521,7 +484,7 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 
 |📖 类型-标题|📖 作者| 📖 推荐 |
 |:---|:---|:---|
-| [[Diffusion推理]📖DiT推理加速综述: Caching](https://zhuanlan.zhihu.com/p/711223667)|@DefTruth|⭐️⭐️⭐|  
+| [[Diffusion推理]📖DiT推理加速综述: Caching](https://zhuanlan.zhihu.com/p/711223667)|@DefTruth|⭐️⭐️⭐|
 | [[Triton编程][基础]📖Triton极简入门: Triton Vector Add](https://zhuanlan.zhihu.com/p/1902778199261291694)|@DefTruth|⭐️⭐️⭐|
 | [[Triton编程][基础]📖Triton Fused Softmax Kernel详解: 从Python源码到PTX](https://zhuanlan.zhihu.com/p/1899562146477609112)|@DefTruth|⭐️⭐️⭐|
 | [[Triton编程][基础]📖vLLM Triton Merge Attention States Kernel详解](https://zhuanlan.zhihu.com/p/1904937907703243110)|@DefTruth|⭐️⭐️⭐|
@@ -665,6 +628,15 @@ The kernels listed here will guide you through a step-by-step progression, rangi
 | [[Tensor Cores]📖Nvidia Tensor Core-MMA PTX编程入门](https://zhuanlan.zhihu.com/p/621855199)|@木子知|⭐️⭐️⭐️|
 | [[Tensor Cores]📖CUDA Ampere Tensor Core HGEMM 矩阵乘法优化](https://zhuanlan.zhihu.com/p/555339335)|@nicholaswilde|⭐️⭐️⭐️|
 | [[GPU通信架构][精解]📖NVIDIA GPGPU（四）- 通信架构](https://zhuanlan.zhihu.com/p/680262016)|@Bruce|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖Torch.compile流程解析: 介绍](https://zhuanlan.zhihu.com/p/9418379234)|@StarCap|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖Torch.compile流程解析: TorchDynamo](https://zhuanlan.zhihu.com/p/9640728231)|@StarCap|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖Torch.compile流程解析: AOTAutograd](https://zhuanlan.zhihu.com/p/9997263922)|@StarCap|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖Torch.compile流程解析: TorchInductor](https://zhuanlan.zhihu.com/p/11224299472)|@StarCap|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖Torch.compile流程解析: 算子融合](https://zhuanlan.zhihu.com/p/21053905491)|@StarCap|⭐️⭐️⭐️|
+| [[torch.compile][实践]📖Torch.compile使用指南](https://zhuanlan.zhihu.com/p/620163218)|@jhang|⭐️⭐️⭐️|
+| [[torch.compile][实践]📖Torch.compile详细示例解析教程](https://zhuanlan.zhihu.com/p/855291863)|@Bbuf|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖一文搞懂TorchDynamo原理](https://zhuanlan.zhihu.com/p/630933479)|@吾乃阿尔法|⭐️⭐️⭐️|
+| [[torch.compile][原理]📖理解torch.compile基本原理和使用方式](https://zhuanlan.zhihu.com/p/12712224407)|@俯仰|⭐️⭐️⭐️|
 
 ## ©️License ([©️back👆🏻](#contents))
 
