@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
@@ -16,16 +15,10 @@
 #define INT4(value) (reinterpret_cast<int4 *>(&(value))[0])
 #define FLOAT4(value) (reinterpret_cast<float4 *>(&(value))[0])
 #define HALF2(value) (reinterpret_cast<half2 *>(&(value))[0])
-#define BFLOAT2(value) (reinterpret_cast<__nv_bfloat162 *>(&(value))[0])
 #define LDST128BITS(value) (reinterpret_cast<float4 *>(&(value))[0])
-#define MAX_EXP_F32 88.3762626647949f
-#define MIN_EXP_F32 -88.3762626647949f
-#define MAX_EXP_F16 __float2half(11.089866488461016f)
-#define MIN_EXP_F16 __float2half(-9.704060527839234f)
 
-// -------------------------------------- FP32
-// -------------------------------------- col2row means read x[row][col] and
-// write y[col][row] row2col means read x[col][row] and write y[row][col]
+// FP32
+// col2row means read x[row][col] and write y[col][row]
 __global__ void mat_transpose_f32_col2row_kernel(float *x, float *y,
                                                  const int row, const int col) {
   const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -36,6 +29,7 @@ __global__ void mat_transpose_f32_col2row_kernel(float *x, float *y,
   }
 }
 
+// row2col means read x[col][row] and write y[row][col]
 __global__ void mat_transpose_f32_row2col_kernel(float *x, float *y,
                                                  const int row, const int col) {
   const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -104,8 +98,8 @@ __global__ void mat_transpose_f32_col2row2d_kernel(float *x, float *y,
 __global__ void mat_transpose_f32_row2col2d_kernel(float *x, float *y,
                                                    const int row,
                                                    const int col) {
-  const int global_y = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_x = blockIdx.y * blockDim.y + threadIdx.y;
+  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
   if (global_y < col && global_x < row) {
     y[global_y * row + global_x] = x[global_x * col + global_y];
   }
@@ -296,11 +290,41 @@ __global__ void mat_transpose_f32x4_shared_bcf_row2col2d_kernel(float *x,
     y[(out_y + 3) * row + out_x] = smem_val.w;
   }
 }
-// TODO: may support double buffer pipeline mat transpose ?
-// TODO: may support fp16 mat transpose ?
 
-// --------------------- PyTorch bindings for custom kernel
-// -----------------------
+__global__ void mat_transpose_f32x4_shared_bcf_merge_write_row2col2d_kernel(
+    float *x, float *y, const int row, const int col) {
+  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
+  const int local_x = threadIdx.x;
+  const int local_y = threadIdx.y;
+  __shared__ float tile[WARP_SIZE_S * 4][WARP_SIZE_S + PAD];
+  if (global_y * 4 < row && global_x < col) {
+    // load value from x to shared memory
+    float4 x_val;
+    x_val.x = x[(global_y * 4) * col + global_x];
+    x_val.y = x[(global_y * 4 + 1) * col + global_x];
+    x_val.z = x[(global_y * 4 + 2) * col + global_x];
+    x_val.w = x[(global_y * 4 + 3) * col + global_x];
+    tile[local_y * 4][local_x] = x_val.x;
+    tile[local_y * 4 + 1][local_x] = x_val.y;
+    tile[local_y * 4 + 2][local_x] = x_val.z;
+    tile[local_y * 4 + 3][local_x] = x_val.w;
+    __syncthreads();
+    float4 smem_val;
+    // load value from shared memory to y.
+    smem_val.x = tile[local_x * 4][local_y];
+    smem_val.y = tile[local_x * 4 + 1][local_y];
+    smem_val.z = tile[local_x * 4 + 2][local_y];
+    smem_val.w = tile[local_x * 4 + 3][local_y];
+
+    const int gid_x = blockIdx.x * blockDim.x;
+    const int gid_y = blockIdx.y * blockDim.y * 4;
+    const int out_y = gid_y + local_x * 4;
+    const int out_x = gid_x + local_y;
+    reinterpret_cast<float4 *>(y)[(out_x * row + out_y) / 4] = FLOAT4(smem_val);
+  }
+}
+
 #define STRINGFY(str) #str
 #define TORCH_BINDING_COMMON_EXTENSION(func)                                   \
   m.def(STRINGFY(func), &func, STRINGFY(func));
@@ -334,8 +358,8 @@ __global__ void mat_transpose_f32x4_shared_bcf_row2col2d_kernel(float *x,
     dim3 block(WARP_SIZE_S, WARP_SIZE_S);                                      \
     dim3 grid((N + WARP_SIZE_S - 1) / (WARP_SIZE_S * n_element_col),           \
               (M + WARP_SIZE_S - 1) / (WARP_SIZE_S * n_element_row));          \
-    mat_transpose_##tag##2d_kernel < < < grid,                                 \
-        block >>> (reinterpret_cast<element_type *>(x.data_ptr()),             \
+    mat_transpose_##tag##2d_kernel<<<grid, block>>>(                           \
+                   reinterpret_cast<element_type *>(x.data_ptr()),             \
                    reinterpret_cast<element_type *>(y.data_ptr()), M, N);      \
   }
 
@@ -361,8 +385,8 @@ TORCH_BINDING_MAT_TRANSPOSE2D(f32x4_shared_bcf_col2row, torch::kFloat32, float,
                               1, 4)
 TORCH_BINDING_MAT_TRANSPOSE2D(f32x4_shared_bcf_row2col, torch::kFloat32, float,
                               4, 1)
-// TODO: may support double buffer pipeline mat transpose ?
-// TODO: may support fp16 mat transpose ?
+TORCH_BINDING_MAT_TRANSPOSE2D(f32x4_shared_bcf_merge_write_row2col,
+                              torch::kFloat32, float, 4, 1)
 
 // CuTe implentations
 extern void mat_transpose_cute_col2row_reg(torch::Tensor, torch::Tensor);
@@ -377,6 +401,9 @@ extern void mat_transpose_cute_row_cvectorized_swizzled(torch::Tensor,
                                                         torch::Tensor);
 extern void mat_transpose_cute_row_rvectorized_swizzled(torch::Tensor,
                                                         torch::Tensor);
+extern void
+    mat_transpose_cute_row_rvectorized_swizzled_optimized(torch::Tensor,
+                                                          torch::Tensor);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // 1d index
@@ -397,6 +424,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // shared memory optimize with bcf
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_f32x4_shared_bcf_col2row2d)
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_f32x4_shared_bcf_row2col2d)
+  TORCH_BINDING_COMMON_EXTENSION(
+      mat_transpose_f32x4_shared_bcf_merge_write_row2col2d)
   // CuTe implentations
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_cute_col2row_reg)
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_cute_row2col_reg)
@@ -408,4 +437,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_cute_row_rvectorized)
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_cute_row_cvectorized_swizzled)
   TORCH_BINDING_COMMON_EXTENSION(mat_transpose_cute_row_rvectorized_swizzled)
+  TORCH_BINDING_COMMON_EXTENSION(
+      mat_transpose_cute_row_rvectorized_swizzled_optimized)
 }
