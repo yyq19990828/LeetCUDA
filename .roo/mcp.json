@@ -1,21 +1,20 @@
 {
-  "mcpServers": {
-    "git": {
-      "command": "uvx",
-      "args": ["mcp-server-git", "--repository", "."]
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/workspace"
-      ]
-    },
-    "context7": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    }
-  }
+	"mcpServers": {
+		"git": {
+			"command": "uvx",
+			"args": [
+				"mcp-server-git",
+				"--repository",
+				"."
+			]
+		},
+		"context7": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@upstash/context7-mcp@latest"
+			]
+		}
+	}
 }
