@@ -18,6 +18,7 @@
 // FP32
 // SGEMM naive: compute one c[i,j]
 // element per threads, all row major
+// 一个线程负责计算C矩阵中的一个元素(a的一行与b的一列的点积, 长度为K)
 __global__ void sgemm_naive_f32_kernel(float *a, float *b, float *c, int M,
                                        int N, int K) {
   int n = blockIdx.x * blockDim.x + threadIdx.x;
@@ -63,7 +64,7 @@ __global__ void sgemm_sliced_k_f32_kernel(float *a, float *b, float *c, int M,
   int load_gmem_b_n = bx * BN + load_smem_b_n; // global col of b and c
   // if (load_gmem_a_m >= M || load_gmem_b_n >= N) return;
 
-  float sum = 0.f;
+  float sum = 0.f; // 每个线程的私有局部变量(寄存器), 累加计算c[load_gmem_a_m][load_gmem_b_n]的值
   for (int bk = 0; bk < (K + BK - 1) / BK; ++bk) {
     int load_gmem_a_k = bk * BK + load_smem_a_k;
     int load_gmem_a_addr = load_gmem_a_m * K + load_gmem_a_k;
@@ -139,7 +140,7 @@ __global__ void sgemm_t_8x8_sliced_k_f32x4_kernel(float *a, float *b, float *c,
     __syncthreads();
 #pragma unroll
     for (int k = 0; k < BK; k++) {
-// 3. 每个线程负责计算BM*BN(12x128)中的TM*TN(8x8)个元素
+// 3. 每个线程负责计算BM*BN(128x128)中的TM*TN(8x8)个元素
 #pragma unroll
       for (int m = 0; m < TM; m++) {
 #pragma unroll
@@ -166,56 +167,82 @@ __global__ void sgemm_t_8x8_sliced_k_f32x4_kernel(float *a, float *b, float *c,
   }
 }
 
+// =============================================================================
+// SGEMM: Block Tile + Thread Tile + K Tile + Vec4 + 转置共享内存 + 寄存器预取
+// =============================================================================
+// 优化点:
+//   [1] Block Tile: 一个16x16的thread block处理C中128x128的块
+//   [2] Thread Tile: 每个线程计算8x8个元素，提高计算密度
+//   [3] K Tile: 沿K维度分块，每块BK=8
+//   [4] Vectorize: 使用float4向量化加载，减少内存事务
+//   [5] 共享内存转置: s_a从[BM][BK]转为[BK][BM]，优化计算时的访问模式
+//   [6] 寄存器预取: 数据先加载到寄存器，减少共享内存访问次数
+//   [7] OFFSET: 可选的padding，用于进一步减少bank conflict
+//   [8] FMA指令: 使用__fmaf_rn融合乘加，提高计算吞吐
+// =============================================================================
+// 线程块和网格配置:
+//   blockDim = (BN/TN, BM/TM) = (16, 16) = 256 threads
+//   gridDim = ((N+BN-1)/BN, (M+BM-1)/BM)
+// =============================================================================
 template <const int BM = 128, const int BN = 128, const int BK = 8,
           const int TM = 8, const int TN = 8, const int OFFSET = 0>
 __global__ void
 sgemm_t_8x8_sliced_k_f32x4_bcf_kernel(float *a, float *b, float *c, const int M,
                                       const int N, const int K) {
-  const int bx = blockIdx.x;
-  const int by = blockIdx.y;
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int tid = ty * blockDim.x + tx;
+  const int bx = blockIdx.x;  // block在N方向的索引
+  const int by = blockIdx.y;  // block在M方向的索引
+  const int tx = threadIdx.x; // 线程在block内x方向索引, 0~15
+  const int ty = threadIdx.y; // 线程在block内y方向索引, 0~15
+  const int tid = ty * blockDim.x + tx; // 线程在block内的一维索引, 0~255
 
-  __shared__ float s_a[BK][BM + OFFSET];
-  __shared__ float s_b[BK][BN + OFFSET];
-  // __shared__ float s_a[BK][BM + 4];
-  // __shared__ float s_b[BK][BN + 4];
+  // 共享内存: 注意这里是[BK][BM]而不是[BM][BK]，即转置存储
+  // 这样在计算时可以按列连续访问s_a，提高访存效率
+  // OFFSET用于padding，减少bank conflict (当OFFSET=4时效果最佳)
+  __shared__ float s_a[BK][BM + OFFSET]; // 8 x 128, 存储A的转置
+  __shared__ float s_b[BK][BN + OFFSET]; // 8 x 128, 存储B
 
-  float r_load_a[TM / 2]; // 4
-  float r_load_b[TN / 2]; // 4
-  float r_comp_a[TM];
-  float r_comp_b[TN];
-  float r_c[TM][TN] = {0.0};
+  // 寄存器: 用于预取和计算
+  float r_load_a[TM / 2]; // 4个float, 从全局内存加载A的临时寄存器
+  float r_load_b[TN / 2]; // 4个float, 从全局内存加载B的临时寄存器
+  float r_comp_a[TM];     // 8个float, 从共享内存加载用于计算的A
+  float r_comp_b[TN];     // 8个float, 从共享内存加载用于计算的B
+  float r_c[TM][TN] = {0.0}; // 8x8=64个float, 累加结果
 
-  // mapping tid to s_a[BK][BM], for each orginal m-th row, load 4 + 4 K-dim
-  // row major values from A matrix, and store it in COL major s_a[BK][BM].
-  int load_a_smem_m = tid / 2; // tid / 2，(0,1,2,...,128)
-  // (0b00000000 & 0b00000001) << 2 = 0
-  // (0b00000001 & 0b00000001) << 2 = 4
-  // (0b00000010 & 0b00000001) << 2 = 0
-  // (0b00000011 & 0b00000001) << 2 = 4
-  int load_a_smem_k = (tid & 1) << 2; // (0,4)
-  // mapping tid to s_b[BK][BN], for each orginal k-th row, load 4 + 4 N-dim
-  // row major values from B matrix, and store it in ROW major s_b[BK][BN].
-  int load_b_smem_k = tid / 32; // 0~8
-  // (0b00000000 & 0b00011111) << 2 = 0
-  // (0b00000001 & 0b00011111) << 2 = 4
-  // (0b00000010 & 0b00011111) << 2 = 8
-  // (0b00000011 & 0b00011111) << 2 = 12
-  int load_b_smem_n = (tid & 31) << 2; // (0,4,8,12,...,124)
+  // ===========================================================================
+  // 第一部分: 计算加载索引
+  // ===========================================================================
+  // 加载A到s_a[BK][BM]: 256个线程加载128x8=1024个元素
+  // 每个线程加载4个连续的float (使用float4)
+  // 256线程 x 4元素 = 1024元素，刚好填满s_a
+  // 策略: 每2个线程负责A的一行(8个元素)，tid/2确定行号，tid%2确定前4个还是后4个
+  int load_a_smem_m = tid / 2;         // 行索引: 0~127, 每2个线程共享一行
+  int load_a_smem_k = (tid & 1) << 2;  // 列索引: 0或4, 奇偶线程分别加载前后4个
 
-  int load_a_gmem_m = by * BM + load_a_smem_m;
-  int load_b_gmem_n = bx * BN + load_b_smem_n;
+  // 加载B到s_b[BK][BN]: 256个线程加载8x128=1024个元素
+  // 策略: 每32个线程负责B的一行(128个元素)，tid/32确定行号
+  int load_b_smem_k = tid / 32;        // 行索引: 0~7
+  int load_b_smem_n = (tid & 31) << 2; // 列索引: 0,4,8,...,124
 
+  // 计算全局内存地址
+  int load_a_gmem_m = by * BM + load_a_smem_m; // A的全局行索引
+  int load_b_gmem_n = bx * BN + load_b_smem_n; // B的全局列索引
+
+  // 边界检查
   if (load_a_gmem_m >= M || load_b_gmem_n >= N)
     return;
 
+  // ===========================================================================
+  // 第二部分: K维度分块迭代
+  // ===========================================================================
   for (int bk = 0; bk < (K + BK - 1) / BK; bk++) {
+    // -------------------------------------------------------------------------
+    // Step 1: 从全局内存加载数据到寄存器 (预取)
+    // -------------------------------------------------------------------------
     int load_a_gmem_k = bk * BK + load_a_smem_k;
     int load_a_gmem_addr = load_a_gmem_m * K + load_a_gmem_k;
     int load_b_gmem_k = bk * BK + load_b_smem_k;
     int load_b_gmem_addr = load_b_gmem_k * N + load_b_gmem_n;
+    // 使用float4向量化加载，一次加载4个float，减少内存事务
     FLOAT4(r_load_a[0]) = FLOAT4(a[load_a_gmem_addr]);
     FLOAT4(r_load_b[0]) = FLOAT4(b[load_b_gmem_addr]);
 
@@ -254,97 +281,99 @@ sgemm_t_8x8_sliced_k_f32x4_bcf_kernel(float *a, float *b, float *c, const int M,
     // tid 29  -> m 14,  k 4 -> all access bank 14 (layer_16/20/24/28)
     // tid 30  -> m 15,  k 0 -> all access bank 15 (layer_0/2/4/6)
     // tid 31  -> m 15,  k 4 -> all access bank 15 (layer_16/20/24/28)
-    // conclusion: we still have bank conflicts for smem_a write access,
-    // each 2 consecutive threads within warp access the same bank!
-    // thus, we still need 2 memory issues as least per warp.
-    s_a[load_a_smem_k][load_a_smem_m] = r_load_a[0];     // e.g layer_0  b0
-    s_a[load_a_smem_k + 1][load_a_smem_m] = r_load_a[1]; // e.g layer_4  b0
-    s_a[load_a_smem_k + 2][load_a_smem_m] = r_load_a[2]; // e.g layer_8  b0
-    s_a[load_a_smem_k + 3][load_a_smem_m] = r_load_a[3]; // e.g layer_12 b0
-    // 2. bank layout analysis: s_b[8][128] same as s_a[8][128]
-    // 3. bank conficts analysis: s_b[8][128]
-    // tid 0   -> k 0, n 0   -> all access bank 0~3   (layer_0)
-    // tid 1   -> k 0, n 4   -> all access bank 4~7   (layer_0)
-    // tid 2   -> k 0, n 8   -> all access bank 7~11  (layer_0)
-    // tid 7   -> k 0, n 28  -> all access bank 28~31 (layer_0)
-    // tid 8   -> k 0, n 32  -> all access bank 0~3   (layer_1)
-    // ...        ...         ...                 ...
-    // tid 15  -> k 0, n 60  -> all access bank 28~31 (layer_1)
-    // tid 16  -> k 0, n 64  -> all access bank 0~3   (layer_2)
-    // ...        ...         ...                 ...
-    // tid 31  -> k 0, n 124 -> all access bank 28~31 (layer_3)
-    // conclusion: we still have bank conflicts within warp,
-    // 0/8/16/24 -> bank 0~3, 1/9/17/25 -> bank 4~7, etc.
-    // thus, we still need 4 memory issues at least per warp.
+    // -------------------------------------------------------------------------
+    // Step 2: 从寄存器写入共享内存 (转置存储A)
+    // -------------------------------------------------------------------------
+    // 关键: A矩阵转置存储! 从全局内存按行读取，写入共享内存时按列存储
+    // 原本A[m][k]按行主序，现在存为s_a[k][m]
+    // 这样后续计算时，同一warp的线程访问s_a的同一行(k相同)，实现合并访问
+    // 注意: 仍存在bank conflict，相邻2个线程访问同一bank，需要2次内存事务
+    s_a[load_a_smem_k][load_a_smem_m] = r_load_a[0];
+    s_a[load_a_smem_k + 1][load_a_smem_m] = r_load_a[1];
+    s_a[load_a_smem_k + 2][load_a_smem_m] = r_load_a[2];
+    s_a[load_a_smem_k + 3][load_a_smem_m] = r_load_a[3];
+    // B矩阵正常存储(行主序)，使用float4向量化写入
+    // 仍存在bank conflict: tid 0/8/16/24访问bank 0~3, tid 1/9/17/25访问bank 4~7
     FLOAT4(s_b[load_b_smem_k][load_b_smem_n]) = FLOAT4(r_load_b[0]);
 
+    // 同步: 确保所有线程完成共享内存写入后再开始计算
     __syncthreads();
 
+    // -------------------------------------------------------------------------
+    // Step 3: 从共享内存加载到寄存器，执行计算
+    // -------------------------------------------------------------------------
 #pragma unroll
     for (int tk = 0; tk < BK; tk++) {
-      // bank conflicts analysis, tx/ty 0~15, 0~7 bank 4*8=32 bytes
-      // tid 0~15 access bank 0~3,  tid 16~31 access bank 4~7, etc.
-      // tid 0,  tk 0 -> ty 0 -> [0][0+0~3],[0][64+0~3] -> bank 0~3(layer_0/2),
-      // tid 0,  tk 7 -> ty 0 -> [7][0+0~3],[0][64+0~3] -> bank
-      // 0~3(layer_28/30), tid 15, tk 0 -> ty 0 -> [0][0+0~3],[0][64+0~3] ->
-      // bank 0~3(layer_0/2), tid 15, tk 7 -> ty 0 -> [7][0+0~3],[0][64+0~3] ->
-      // bank 0~3(layer_28/30), tid 16, tk 0 -> ty 1 -> [0][0+4~7],[0][64+4~7]
-      // -> bank 4~7(layer_0/2), tid 16, tk 7 -> ty 1 -> [7][0+4~7],[0][64+4~7]
-      // -> bank 4~7(layer_28/30), tid 31, tk 0 -> ty 1 ->
-      // [0][0+4~7],[0][64+4~7] -> bank 4~7(layer_0/2), tid 31, tk 7 -> ty 1 ->
-      // [7][0+4~7],[0][64+4~7] -> bank 4~7(layer_28/30), tid 255,tk 0 -> ty 15
-      // -> [0][0+60~63],[0][64+60~63] -> bank 28~31(layer_1/3), tid 255,tk 7 ->
-      // ty 15 -> [7][0+60~63],[0][64+60~63] -> bank 28~31(layer_29/31),
+      // 从s_a加载: 每个线程加载8个元素(分两次float4)
+      // 线程ty负责C矩阵中第(ty*TM)~(ty*TM+7)行的计算
+      // 需要A矩阵对应的8行数据，分布在前半部分和后半部分
+      // r_comp_a[0~3] = s_a[tk][ty*4 : ty*4+3]     (前半BM)
+      // r_comp_a[4~7] = s_a[tk][64+ty*4 : 64+ty*4+3] (后半BM)
       FLOAT4(r_comp_a[0]) = FLOAT4(s_a[tk][ty * TM / 2]);
       FLOAT4(r_comp_a[4]) = FLOAT4(s_a[tk][ty * TM / 2 + BM / 2]);
-      // if (tid == < 32 && bx == 0 && by == 0) {
-      //   printf("tid: %d, tx: %d, ty: %d, [%d][%d]\n", tid, tx, ty, tk, ty *
-      //   TM / 2); printf("tid: %d, tx: %d, ty: %d, [%d][%d]\n", tid, tx, ty,
-      //   tk, ty * TM / 2 + BM / 2);
-      // }
-      // conclusion: still have bank conflicts, need 16 memory issues ?
 
-      // tid 0/8/16/24  access bank 0~3,  tid 1/9/17/25  access bank 4~7,
-      // tid 2/10/18/26 access bank 8~11, tid 7/15/23/31 access bank 28~31, etc.
-      // tid 0, tk 0 -> tx 0 -> [0][0+0~3],[0][64+0~3] -> bank 0~3(layer_0/2),
-      // tid 0, tk 7 -> tx 0 -> [7][0+0~3],[0][64+0~3] -> bank 0~3(layer_28/30),
-      // tid 1, tk 0 -> tx 1 -> [0][0+4~7],[0][64+4~7] -> bank 4~7(layer_0/2),
-      // tid 1, tk 7 -> tx 1 -> [7][0+4~7],[0][64+4~7] -> bank 4~7(layer_28/30),
+      // 从s_b加载: 每个线程加载8个元素(分两次float4)
+      // 线程tx负责C矩阵中第(tx*TN)~(tx*TN+7)列的计算
+      // r_comp_b[0~3] = s_b[tk][tx*4 : tx*4+3]     (前半BN)
+      // r_comp_b[4~7] = s_b[tk][64+tx*4 : 64+tx*4+3] (后半BN)
       FLOAT4(r_comp_b[0]) = FLOAT4(s_b[tk][tx * TN / 2]);
       FLOAT4(r_comp_b[4]) = FLOAT4(s_b[tk][tx * TN / 2 + BN / 2]);
-      // conclusion: still have some bank conflicts, need 4 memory issues.
 
+      // 计算: 8x8外积，使用FMA指令
+      // 每个线程计算r_c[8][8] = r_comp_a[8] * r_comp_b[8]的外积累加
 #pragma unroll
       for (int tm = 0; tm < TM; tm++) {
 #pragma unroll
         for (int tn = 0; tn < TN; tn++) {
-          // r_c[tm][tn] += r_comp_a[tm] * r_comp_b[tn];
+          // __fmaf_rn: fused multiply-add, round to nearest
+          // r_c[tm][tn] += r_comp_a[tm] * r_comp_b[tn]
           r_c[tm][tn] = __fmaf_rn(r_comp_a[tm], r_comp_b[tn], r_c[tm][tn]);
         }
       }
     }
-    // sync per BK.
+    // 同步: 确保所有线程完成计算后再加载下一块数据，防止数据被覆盖
     __syncthreads();
   }
 
+  // ===========================================================================
+  // 第三部分: 将结果从寄存器写回全局内存
+  // ===========================================================================
+  // 每个线程的8x8结果分布在C矩阵的4个象限:
+  //   r_c[0~3][0~3]   -> C的左上 (前半M, 前半N)
+  //   r_c[0~3][4~7]   -> C的右上 (前半M, 后半N)
+  //   r_c[4~7][0~3]   -> C的左下 (后半M, 前半N)
+  //   r_c[4~7][4~7]   -> C的右下 (后半M, 后半N)
+  // 使用float4向量化写入，每次写4个float
+
+  // 写入前半M (r_c[0~3][...])
 #pragma unroll
   for (int i = 0; i < TM / 2; i++) {
     int store_c_gmem_m = by * BM + ty * TM / 2 + i;
     int store_c_gmem_n = bx * BN + tx * TN / 2;
     int store_c_gmem_addr = store_c_gmem_m * N + store_c_gmem_n;
-    FLOAT4(c[store_c_gmem_addr]) = FLOAT4(r_c[i][0]);
-    FLOAT4(c[store_c_gmem_addr + BN / 2]) = FLOAT4(r_c[i][4]);
+    FLOAT4(c[store_c_gmem_addr]) = FLOAT4(r_c[i][0]);           // 前半N
+    FLOAT4(c[store_c_gmem_addr + BN / 2]) = FLOAT4(r_c[i][4]);  // 后半N
   }
+  // 写入后半M (r_c[4~7][...])
 #pragma unroll
   for (int i = 0; i < TM / 2; i++) {
     int store_c_gmem_m = by * BM + BM / 2 + ty * TM / 2 + i;
     int store_c_gmem_n = bx * BN + tx * TN / 2;
     int store_c_gmem_addr = store_c_gmem_m * N + store_c_gmem_n;
-    FLOAT4(c[store_c_gmem_addr]) = FLOAT4(r_c[i + TM / 2][0]);
-    FLOAT4(c[store_c_gmem_addr + BN / 2]) = FLOAT4(r_c[i + TM / 2][4]);
+    FLOAT4(c[store_c_gmem_addr]) = FLOAT4(r_c[i + TM / 2][0]);          // 前半N
+    FLOAT4(c[store_c_gmem_addr + BN / 2]) = FLOAT4(r_c[i + TM / 2][4]); // 后半N
   }
 }
 
+// =============================================================================
+// SGEMM: 在bcf基础上增加Double Buffering优化
+// =============================================================================
+// 新增优化:
+//   [9] Double Buffering: 使用两个共享内存缓冲区交替使用
+//       - 当计算使用buffer[0]时，同时加载数据到buffer[1]
+//       - 隐藏内存访问延迟，实现计算和访存的重叠
+//       - 减少每个BK迭代中的同步次数
+// =============================================================================
 template <const int BM = 128, const int BN = 128, const int BK = 8,
           const int TM = 8, const int TN = 8, const int OFFSET = 0>
 __global__ void sgemm_t_8x8_sliced_k_f32x4_bcf_dbuf_kernel(
@@ -386,7 +415,8 @@ __global__ void sgemm_t_8x8_sliced_k_f32x4_bcf_dbuf_kernel(
 
   // 1）主循环从bk = 1
   // 开始，第一次数据加载在主循环之前，最后一次计算在主循环之后，这是pipeline
-  // 的特点决定的； 2）由于计算和下一次访存使用的Shared
+  // 的特点决定的； 
+  // 2）由于计算和下一次访存使用的Shared
   // Memory不同，因此主循环中每次循环只需要一次__syncthreads()即可
   // 3）由于GPU不能向CPU那样支持乱序执行，主循环中需要先将下一次循环计算需要的Gloabal
   // Memory中的数据load

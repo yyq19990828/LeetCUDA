@@ -650,3 +650,91 @@ out_tf32(mma2x4+...+stage2+swizzle): ['118.526184', '44.2716636'], time:93.91186
               out_tf32(cublas+tf32): ['118.526184', '44.2716636'], time:75.96850ms, swizzle: NOOP, TFLOPS: 57.89 (+23.34%)
 ----------------------------------------------------------------------------------------------------------------------------------
 ```
+
+## 核函数总结
+
+### 1. sgemm.cu - CUDA Cores 基础优化实现
+
+| 核函数名称 | 优化技术 | 说明 |
+|:---|:---|:---|
+| `sgemm_naive_f32_kernel` | 无 | 朴素实现，每个线程计算C矩阵一个元素 |
+| `sgemm_sliced_k_f32_kernel` | Block Tile + K Tile + Shared Memory | 使用共享内存，K维度分块迭代 |
+| `sgemm_t_8x8_sliced_k_f32x4_kernel` | + Thread Tile(8x8) + Vec4 | 每线程计算8x8元素，float4向量化加载 |
+| `sgemm_t_8x8_sliced_k_f32x4_bcf_kernel` | + 共享内存转置 + 寄存器预取 + FMA | A矩阵转置存储减少bank conflict，使用`__fmaf_rn` |
+| `sgemm_t_8x8_sliced_k_f32x4_bcf_dbuf_kernel` | + Double Buffering | 双缓冲隐藏访存延迟，减少同步次数 |
+
+**优化演进路线：**
+```
+naive → K分块+共享内存 → 线程分块8x8+向量化 → 转置+寄存器预取+FMA → 双缓冲
+```
+
+### 2. sgemm_async.cu - 异步拷贝优化实现
+
+| 核函数名称 | 配置 | 优化技术 |
+|:---|:---|:---|
+| `sgemm_t_8x4_sliced_k16_f32x4_bcf_dbuf_kernel` | BM=64, BN=64, BK=16, TM=8, TN=4 | Double Buffering, 128线程/block |
+| `sgemm_t_8x4_sliced_k16_f32x4_bcf_dbuf_async_kernel` | 同上 | + `cp.async` 异步拷贝指令 |
+| `sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_kernel` | BM=128, BN=128, BK=16, TM=8, TN=8 | Double Buffering, 256线程/block |
+| `sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async_kernel` | 同上 | + `cp.async` 异步拷贝指令 |
+| `sgemm_t_8x16_sliced_k16_f32x4_bcf_dbuf_kernel` | BM=128, BN=256, BK=16, TM=8, TN=16 | Double Buffering, 更大的Thread Tile |
+| `sgemm_t_8x16_sliced_k16_f32x4_bcf_dbuf_async_kernel` | 同上 | + `cp.async` 异步拷贝指令 |
+
+**关键宏定义：**
+```cpp
+CP_ASYNC_CA(dst, src, bytes)  // 异步拷贝, cache all (L1+L2)
+CP_ASYNC_CG(dst, src, bytes)  // 异步拷贝, cache global (仅L2)
+CP_ASYNC_COMMIT_GROUP()       // 提交异步拷贝组
+CP_ASYNC_WAIT_GROUP(n)        // 等待异步拷贝完成
+```
+
+### 3. sgemm_cublas.cu - cuBLAS 参考实现
+
+| 函数名称 | 说明 |
+|:---|:---|
+| `cublas_sgemm` | 标准FP32 cuBLAS GEMM，使用`CUBLAS_DEFAULT_MATH` |
+| `cublas_sgemm_tf32` | TF32 Tensor Core加速，使用`CUBLAS_TF32_TENSOR_OP_MATH` |
+
+### 4. sgemm_wmma_tf32_stage.cu - WMMA Tensor Core 实现
+
+| 核函数名称 | 配置 | 优化技术 |
+|:---|:---|:---|
+| `sgemm_wmma_m16n16k8_mma4x2_warp2x4_stages_kernel` | WMMA 16x16x8, 静态共享内存 | Multi-Stage Pipeline + Block Swizzle + Copy Async |
+| `sgemm_wmma_m16n16k8_mma4x2_warp2x4_stages_dsmem_kernel` | 同上, 动态共享内存 | 支持更大的stage数(最大96KB) |
+
+**WMMA配置参数：**
+- `WMMA_M=16, WMMA_N=16, WMMA_K=8`: WMMA fragment尺寸
+- `WMMA_TILE_M=4, WMMA_TILE_N=2`: 每个warp计算的MMA tile数
+- `WARP_TILE_M=2, WARP_TILE_N=4`: warp级别的tile配置
+- `K_STAGE=2/3/4/5`: Pipeline stage数
+- `BLOCK_SWIZZLE`: Thread Block Swizzle开关
+
+**Block尺寸计算：**
+```
+BM = WMMA_M × WMMA_TILE_M × WARP_TILE_M = 16×4×2 = 128
+BN = WMMA_N × WMMA_TILE_N × WARP_TILE_N = 16×2×4 = 128
+BK = WMMA_K = 8
+```
+
+**辅助核函数：**
+| 函数名称 | 说明 |
+|:---|:---|
+| `f32x4_tf32x4_kernel` | FP32转TF32预处理，使用`wmma::__float_to_tf32` |
+
+### 核函数优化技术对照表
+
+| 优化技术 | sgemm.cu | sgemm_async.cu | sgemm_wmma.cu |
+|:---|:---:|:---:|:---:|
+| Block Tiling | ✔️ | ✔️ | ✔️ |
+| Thread Tiling | ✔️ | ✔️ | - |
+| K Tiling | ✔️ | ✔️ | ✔️ |
+| Shared Memory | ✔️ | ✔️ | ✔️ |
+| Float4 向量化 | ✔️ | ✔️ | ✔️ |
+| 共享内存转置 | ✔️ | ✔️ | - |
+| 寄存器预取 | ✔️ | ✔️ | ✔️ |
+| FMA指令 | ✔️ | ✔️ | - |
+| Double Buffering | ✔️ | ✔️ | - |
+| Copy Async | - | ✔️ | ✔️ |
+| Multi-Stage Pipeline | - | - | ✔️ |
+| Block Swizzle | - | - | ✔️ |
+| WMMA/Tensor Core | - | - | ✔️ |
+| 动态共享内存 | - | - | ✔️ |
