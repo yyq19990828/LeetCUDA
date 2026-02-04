@@ -7,7 +7,9 @@
 - [X] nms_kernel(CPU/GPU)
 - [X] PyTorch bindings
 
-nms cuda实现是最基础的版本，根据[官方源码](https://github.com/pytorch/vision/blob/main/torchvision/csrc/ops/cuda/nms_kernel.cu)可以进行进一步优化。
+nms cuda 包含两个版本：
+- `nms.cu`: 基础版本，每个线程处理一个 box，串行检查是否被抑制
+- `nms_v2.cu`: 优化版本，基于[官方源码](https://github.com/pytorch/vision/blob/main/torchvision/csrc/ops/cuda/nms_kernel.cu)的位掩码 + 分块 + 共享内存策略
 
 ## 0x01 NMS 算法原理
 
@@ -120,7 +122,44 @@ __global__ void nms_kernel(...) {
 }
 ```
 
-**注意**: 这是基础实现，存在线程间依赖问题。官方 TorchVision 版本使用位掩码和分块策略来优化并行度。
+**注意**: 这是基础实现，存在线程间依赖问题。优化版 `nms_v2.cu` 使用位掩码和分块策略来优化并行度。
+
+### 优化版 CUDA 实现思路 (nms_v2.cu)
+
+基于 PyTorch Vision 官方实现，采用 **两阶段 Kernel** 策略：
+
+**Kernel 1 - 分块计算 IoU 位掩码:**
+
+```
+将 N×N 的 IoU 比较矩阵分成 B×B 个子块 (B = ceil(N/64))
+每个 CUDA block 负责一个子块的计算
+
+     col_block_0    col_block_1    col_block_2
+  row_block_0 [ mask_00         mask_01         mask_02 ]
+  row_block_1 [    -            mask_11         mask_12 ]  ← 只算上三角
+  row_block_2 [    -               -            mask_22 ]
+
+每个线程输出一个 unsigned long long (64 bits)
+第 i 位 = 1 表示当前 box 与列方向第 i 个 box 的 IoU > threshold
+```
+
+优化点：
+- **共享内存**: 列方向的 64 个 box 加载到 shared memory，block 内所有线程复用
+- **上三角优化**: `row_start > col_start` 时直接跳过（NMS 只需高分抑制低分）
+- **消除 race condition**: 位掩码写入独立，无线程间依赖
+
+**Kernel 2 - GPU 端展开掩码:**
+
+```
+顺序遍历每个 box（按 score 降序）:
+  if box 未被 removed:
+    keep[box] = true
+    removed |= mask[box]   ← 合并位掩码，抑制重叠的后续 box
+```
+
+优化点：
+- **全 GPU 计算**: 避免 mask 拷贝到 CPU 处理再拷回的开销
+- **`masked_select` 输出**: 直接在 GPU 上提取保留索引
 
 ## 测试
 

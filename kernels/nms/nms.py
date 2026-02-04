@@ -6,21 +6,32 @@ from torchvision.ops import nms
 
 torch.set_grad_enabled(False)
 
-# Load the CUDA kernel as a python module
+cuda_cflags = [
+    "-O3",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "--use_fast_math",
+]
+cpp_cflags = ["-std=c++17"]
+
+# Load the basic CUDA kernel
 lib = load(
     name="nms_lib",
     sources=["nms.cu"],
-    extra_cuda_cflags=[
-        "-O3",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-    ],
-    extra_cflags=["-std=c++17"],
+    extra_cuda_cflags=cuda_cflags,
+    extra_cflags=cpp_cflags,
+)
+
+# Load the optimized CUDA kernel (bitmask + shared memory + GPU-side gather)
+lib_v2 = load(
+    name="nms_lib_v2",
+    sources=["nms_v2.cu"],
+    extra_cuda_cflags=cuda_cflags,
+    extra_cflags=cpp_cflags,
 )
 
 
@@ -80,6 +91,7 @@ for nboxes in Nboxes:
     boxes, scores = generate_random_data(nboxes)
     boxes = boxes.cuda().float().contiguous()
     scores = scores.cuda().float().contiguous()
-    run_benchmark(lib.nms, boxes, scores, thresholds, "nms")
-    run_benchmark(nms, boxes, scores, thresholds, "nms_th")
+    run_benchmark(lib.nms, boxes, scores, thresholds, "nms_basic")
+    run_benchmark(lib_v2.nms, boxes, scores, thresholds, "nms_v2")
+    run_benchmark(nms, boxes, scores, thresholds, "nms_torch")
     print("-" * 85)

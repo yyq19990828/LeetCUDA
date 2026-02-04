@@ -1,5 +1,7 @@
 #include <string>
 #include <vector>
+#include <cmath>
+#include <algorithm>
 
 struct Box {
   float x1, y1, x2, y2, score;
@@ -9,12 +11,12 @@ struct Box {
     float inner_y1 = y1 > other.y1 ? y1 : other.y1;
     float inner_x2 = x2 < other.x2 ? x2 : other.x2;
     float inner_y2 = y2 < other.y2 ? y2 : other.y2;
-    float inner_h = inner_y2 - inner_y1 + 1.0f;
-    float inner_w = inner_x2 - inner_x1 + 1.0f;
+    float inner_h = std::max(inner_y2 - inner_y1 + 1.0f, 0.0f);
+    float inner_w = std::max(inner_x2 - inner_x1 + 1.0f, 0.0f);
     float inner_area = inner_h * inner_w;
-    return (inner_area / (area() + tbox.area() - inner_area));
+    return (inner_area / (area() + other.area() - inner_area));
   }
-}
+};
 
 void hard_nms(std::vector<Box> &input, std::vector<Box> &output,
               float iou_threshold){
