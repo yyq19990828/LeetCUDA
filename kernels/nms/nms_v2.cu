@@ -133,6 +133,8 @@ __global__ void NmsKernelMask(int n_boxes, float iou_threshold,
 
     for (int i = start; i < col_size; ++i) {
       if (DevIoU(cur_box, block_boxes + i * 4, iou_threshold)) {
+        // 1ULL: unsigned long long 字面量 1（U = unsigned, LL = long long），
+        // 用于位移运算以设置第 i 位
         mask_val |= 1ULL << i;
       }
     }
@@ -185,6 +187,8 @@ __global__ void GatherKeepFromMask(bool* keep,
       if (i >= n_boxes) break;
 
       // 检查当前 box 是否已被移除
+      // 说明: 1ULL 是 unsigned long long 的常量 1（U = unsigned, LL = long long），
+      //      通过 (1ULL << inblock) 可构造对应的位掩码来检查/设置第 inblock 位
       if (!(removed_val & (1ULL << inblock))) {
         // 未被移除 → 保留该 box
         if (tid == 0) {
