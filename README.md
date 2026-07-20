@@ -38,73 +38,44 @@
 ## 📖 Quick Start 🔥🔥
 
 ```bash
+git clone https://github.com/xlite-dev/LeetCUDA.git && cd LeetCUDA
 git submodule update --init --recursive --force && cd kernels/interview
-# Ada SM89 + MMA + SMEM Swizzle + Block Swizzle + CuTe (Recommended: CUDA Toolkit >= 13.2)
-nvcc -std=c++20 -O2 -arch=sm_89 -lcublas -lcuda notes-v2.cu -o notes_v2_sm89.bin # Ada
+
+# Ada SM_89 + MMA + SMEM Swizzle + Block Swizzle + CuTe (CUDA Toolkit >= 13.2)
+nvcc -std=c++20 -O2 -arch=sm_89 -lcublas -lcuda notes-v2.cu -o notes_v2_sm89.bin
 nvcc -std=c++20 -O2 -arch=sm_89 -DNOTES_V2_ENABLE_CUTE -I ../../third-party/cutlass/include  \
-  -lcublas -lcuda notes-v2.cu -o notes_v2_cute_sm89.bin 
-# Hopper SM90a + CuTe + Swizzle + TMA WGMMA WS + CuTe HGEMM (Recommended: CUDA Toolkit >= 13.2)
+  -lcublas -lcuda notes-v2.cu -o notes_v2_cute_sm89.bin
+
+# Hopper SM_90a + CuTe + Swizzle + TMA WGMMA WS + CuTe HGEMM (CUDA Toolkit >= 13.2)
 nvcc -std=c++20 -O2 -gencode arch=compute_90a,code=sm_90a -DNOTES_V2_ENABLE_WGMMA \
   -DNOTES_V2_ENABLE_CUTE -DNOTES_V2_ENABLE_TMA_MMA_WS -I ../../third-party/cutlass/include \
-  -lcublas -lcuda notes-v2.cu -o notes_v2_sm90.bin # Hopper (H100, H200, etc)
-# Blackwell SM120 + CuTe + Swizzle + TMA MMA WS + cuDNN SDPA (Recommended: CUDA Toolkit >= 13.2):
-nvcc -std=c++20 -O2 -arch=sm_120a -DNOTES_V2_ENABLE_CUTE -DNOTES_V2_ENABLE_TMA_MMA_WS \
-  -DNOTES_V2_ENABLE_CUDNN -I ../../third-party/cutlass/include -I ../../third-party/cudnn-frontend/include \
-  -L/usr/local/cuda/targets/x86_64-linux/lib/stubs -lcublas -lcudnn -lnvrtc -lcuda \
-  notes-v2.cu -o notes_v2_cute_ws_sm120a.bin
+  -lcublas -lcuda notes-v2.cu -o notes_v2_sm90a.bin 
+
+# Blackwell SM_120a + CuTe + Swizzle + TMA MMA WS + cuDNN SDPA (CUDA Toolkit >= 13.2):
+nvcc -std=c++20 -O2 -gencode arch=compute_120a,code=sm_120a -DNOTES_V2_ENABLE_CUTE \
+  -DNOTES_V2_ENABLE_TMA_MMA_WS -DNOTES_V2_ENABLE_CUDNN -I ../../third-party/cutlass/include \
+  -I ../../third-party/cudnn-frontend/include -L/usr/local/cuda/targets/x86_64-linux/lib/stubs \
+  -lcublas -lcudnn -lnvrtc -lcuda notes-v2.cu -o notes_v2_sm120a.bin 
 ```
 
 ```bash
-# Run notes_v2_sm120a.bin with bench mode (tested: NVIDIA PRO 5000)
-./notes_v2_cute_ws_sm120a.bin --bench --bench-fa --mnk 8192,8192,8192 --bnhd 8,8192,48,64
-HGEMM: M=8192 N=8192 K=8192   FA: B=8 H=48 N=8192 D=64
-| Kernel                                     | Max Err      | Pass | TFLOPS   |
-|--------------------------------------------|--------------|------|----------|
-| BlockReduce                                | 1.144409e-05 | PASS | None     |
-| Dot                                        | 3.814697e-06 | PASS | None     |
-| Dot-Vec4                                   | 0.000000e+00 | PASS | None     |
-| ReLU                                       | 0.000000e+00 | PASS | None     |
-| ReLU-Vec4                                  | 0.000000e+00 | PASS | None     |
-| ElemwiseAdd                                | 0.000000e+00 | PASS | None     |
-| ElemwiseAdd-Vec4                           | 0.000000e+00 | PASS | None     |
-| Histogram                                  | 0.000000e+00 | PASS | None     |
-| MergeAttnStates                            | 1.788139e-07 | PASS | None     |
-| MergeAttnStates-inf                        | 0.000000e+00 | PASS | None     |
-| OnlineSafeSoftmax                          | 3.725290e-09 | PASS | None     |
-| SafeSoftmax                                | 1.862645e-09 | PASS | None     |
-| NaiveSoftmax                               | 3.725290e-09 | PASS | None     |
-| RMSNorm                                    | 4.768372e-07 | PASS | None     |
-| RMSNorm-Vec4                               | 4.768372e-07 | PASS | None     |
-| LayerNorm                                  | 4.768372e-07 | PASS | None     |
-| LayerNorm-Vec4                             | 3.576279e-07 | PASS | None     |
-| RoPE                                       | 1.192093e-07 | PASS | None     |
-| MatTranspose                               | 0.000000e+00 | PASS | None     |
-| MatTransposePadded                         | 0.000000e+00 | PASS | None     |
-| SGEMV-K128                                 | 9.536743e-07 | PASS | None     |
-| SGEMV-K32                                  | 9.536743e-07 | PASS | None     |
-| SGEMV-K16                                  | 2.384186e-07 | PASS | None     |
-| SGEMM                                      | 0.000000e+00 | PASS | None     |
-| SGEMM-Vec4                                 | 0.000000e+00 | PASS | None     |
-| HGEMM MMA (S=2, SW=0)                      | 0.000000e+00 | PASS | 118.3    |
-| HGEMM MMA (S=2, SW=1)                      | 0.000000e+00 | PASS | 125.1    |
-| HGEMM MMA (S=3, SW=0)                      | 0.000000e+00 | PASS | 122.7    |
-| HGEMM MMA (S=3, SW=1)                      | 0.000000e+00 | PASS | 127.5    |
-| HGEMM Swizzle+Reg2x (S=2, SW=0)            | 0.000000e+00 | PASS | 120.6    |
-| HGEMM Swizzle+Reg2x (S=2, SW=1)            | 0.000000e+00 | PASS | 125.6    |
-| HGEMM Swizzle+Reg2x (S=3, SW=0)            | 0.000000e+00 | PASS | 123.2    |
-| HGEMM Swizzle+Reg2x (S=3, SW=1)            | 0.000000e+00 | PASS | 128.3    |
-| HGEMM CuTe Swizzle (S=2, SW=0)             | 0.000000e+00 | PASS | 239.0    |
-| HGEMM CuTe Swizzle (S=2, SW=1)             | 0.000000e+00 | PASS | 244.6    |
-| HGEMM CuTe Swizzle (S=3, SW=0)             | 0.000000e+00 | PASS | 252.8    |
-| HGEMM CuTe Swizzle (S=3, SW=1)             | 0.000000e+00 | PASS | 260.5    |
-| HGEMM TMA MMA WS (S=1, SW=0)               | 0.000000e+00 | PASS | 134.0    |
-| HGEMM TMA MMA WS (S=1, SW=1)               | 0.000000e+00 | PASS | 227.9    |
-| HGEMM TMA MMA WS (S=2, SW=0)               | 0.000000e+00 | PASS | 192.8    |
-| HGEMM TMA MMA WS (S=2, SW=1)               | 0.000000e+00 | PASS | 228.9    |
-| HGEMM TMA MMA WS (S=3, SW=0)               | 0.000000e+00 | PASS | 194.9    |
-| HGEMM TMA MMA WS (S=3, SW=1)               | 0.000000e+00 | PASS | 228.1    |
-| FlashAttn-SplitQ (kStage=2)                | 1.831055e-04 | PASS | 185.3    |
+# Run notes_v2_sm120a.bin with bench mode (e.g., NVIDIA RTX 5090, Blackwell SM_120a)
+./notes_v2_sm120a.bin --bench --mnk 8192,8192,8192 --bhnd 1,48,8192,64 # Currently, FP16 only.
+| Kernel                                         | Max Err      | Pass | TFLOPS vs cu{BLAS,DNN} |
+|------------------------------------------------|--------------|------|------------------------|
+| HGEMM CuTe Swizzle (S=2, SW=0)                 | 0.000000e+00 | PASS | 349.5/369.5 (0.95x)    |
+| HGEMM CuTe Swizzle (S=2, SW=1)                 | 0.000000e+00 | PASS | 375.0/369.5 (1.01x)    |
+| HGEMM CuTe Swizzle (S=3, SW=0)                 | 0.000000e+00 | PASS | 373.7/369.5 (1.01x)    |
+| HGEMM CuTe Swizzle (S=3, SW=1)                 | 0.000000e+00 | PASS | 386.8/369.5 (1.05x)    |
+| FlashAttention-2 (S=1, D=64, Pad)              | 1.831055e-04 | PASS | 239.0/227.5 (1.05x)    |
+| FlashAttention-2 (S=2, D=64, Pad)              | 1.831055e-04 | PASS | 271.3/227.5 (1.19x)    |
+| FlashAttention-2 TMA MMA WS (Sk=1, Sv=1, D=64) | 1.831055e-04 | PASS | 282.6/227.5 (1.24x)    |
+| FlashAttention-2 TMA MMA WS (Sk=2, Sv=1, D=64) | 1.831055e-04 | PASS | 287.3/227.5 (1.26x)    |
+| FlashAttention-2 TMA MMA WS (Sk=3, Sv=1, D=64) | 1.831055e-04 | PASS | 286.4/227.5 (1.26x)    |
+| FlashAttention-2 TMA MMA WS (Sk=4, Sv=1, D=64) | 1.831055e-04 | PASS | 228.1/227.5 (1.00x)    |
+| FlashAttention-2 TMA MMA WS (Sk=2, Sv=2, D=64) | 1.831055e-04 | PASS | 290.8/227.5 (1.28x)    |
 ```
+
 A PDF version of LeetCUDA focused on **interview scenarios** is available at [`kernels/interview/notes-v2.pdf`](https://github.com/xlite-dev/LeetCUDA/blob/main/kernels/interview/notes-v2.pdf).
 
 ## 📖 Contents
