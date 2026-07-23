@@ -6538,25 +6538,317 @@ CUTE_DEVICE void gemm_rs(
 }  // namespace fa_cute
 
 // =============================================================================
-// FA2 CuTe TMA MMA WS (1 Consumer WG) (single consumer, Br=128, Bc=64)
+// FA2 CuTe cp.async MMA Stages Split-Q (no TMA, no Warp Specialization)
 // =============================================================================
-// 与 flash_attn_3_tma_mma_ws_split_q_cute (FA3-style, dual consumer, Br=64) 的区别：
-//   - 单 consumer WG (256T = 8 warps) 全 KV 遍历，无 split-KV merge
-//   - Br=128 -> TiledMMA EURepeat _8 / Tile<_128,_16,_16> (8c 为 _4 / Tile<_64,_16,_16>)
-//   - Q smem tile 为 [128, D] (8c 为 [64, D])，K/V tile 仍为 [64, D]
-//   - kStagesK 和 kStagesV 均可配置 (>=1)，对齐 8b flash_attn_tma_mma_ws_stages_split_q 语义
-//   - producer 顺序对齐 8b：V-first (load V[tile+Sv-1]) 然后 K-after (prefetch K[tile+Sk-1])
-//   - mainloop 结束后直接 normalize (O=Oacc/l) + store，无 merge scratch
+// 是 flash_attn_tma_mma_ws_split_q_cute 的简化版：去掉 TMA producer/consumer WS，
+// 改用 cp.async + 统一 pipeline（参考 hgemm_mma_stages_tn_cute 的 cute::copy 用法
+// + flash_attn_mma_stages_split_q 手写版本的 V/K group 管理策略）。
 //
-// Barrier 协议 (单 consumer, 256 threads)：
-//   q_full: TmaBarrier init 1 (producer arrive_and_expect_tx, consumer wait)
-//   k_full[Sk]: TmaBarrier init 1; k_empty[Sk]: CtaBarrier init 256 (consumer arrive, producer wait)
-//   v_full[Sv]: TmaBarrier init 1; v_empty[Sv]: CtaBarrier init 256
-//   phase: consumer wait k_full[stage] at (tile/Sk)&1; producer wait k_empty at (k_tile/Sk)&1
-//          consumer wait v_full[stage_v] at (tile/Sv)&1; producer wait v_empty at (v_tile/Sv)&1
+// ★ 核心设计：
+//   - 只支持 kStagesK（V 固定单 buffer，无 kStagesV）
+//   - V 在 QK 之前发起 cp.async，通过 QK+softmax 隐藏 V 延迟
+//   - V/K 分开 commit_group，利用 cp.async group 的 LIFO 栈特性选择性 wait
 //
-// 复用 fa_cute::gemm_ss / gemm_rs / convert_layout_acc_rowcol /
-//      convert_layout_acc_Aregs / convert_type (通用 helper，不依赖 Br)
+// ★ cp.async group 管理策略（对齐手写版 L4323-4765）：
+//   提交顺序（每轮 tile）：
+//     1. copy V[tile] -> sV; cp_async_fence()  (group V_tile，栈底)
+//     2. copy K[tile+kStagesK-1] -> sK[write]; cp_async_fence()  (group K_next，栈顶)
+//   等待策略：
+//     QK 前：kStagesK==1 -> wait<0>+sync（V+K 都是当前 tile，全等）
+//            kStagesK>1  -> 无 wait（K[tile] 已在上一轮循环末尾 wait<0> 完成）
+//     PV 前：kStagesK>1 且非最后 tile -> wait<1>+sync（栈顶 K_next 未完成，V_tile 完成）
+//            否则 -> wait<0>+sync
+//     循环末尾：kStagesK>1 且非最后 tile -> wait<0>+sync（确保 K_next 完成，
+//              下一轮 QK 安全；同时保护 V/K smem 不被提前覆盖）
+//
+// ★ 同步链（参考手写版 6 个同步点）：
+//   1. Q load: copy + fence + wait<0> + sync
+//   2. PREFETCH K[0..Sk-2]: copy + fence，然后 wait<Sk-2> + sync
+//   3. 每轮 tile:
+//      3a: V[tile] fence + K_next fence (kStagesK>1) 或 K[tile] fence (kStagesK==1)
+//      3b: QK 前 wait (kStagesK==1: wait<0>+sync; kStagesK>1: 无)
+//          QK gemm_ss
+//      3c: softmax (纯寄存器，无 sync)
+//      3d: PV 前 wait (见上) + sync
+//          PV gemm_rs
+//      3e: rescale (纯寄存器，无 sync)
+//      循环末尾: kStagesK>1 且非最后 -> wait<0> + sync
+//
+// 限制：仅 self-attention，无 causal/varlen/GQA（与 TMA FA2 v1 一致）
+template <int kHeadDim, int kStagesK = 2>
+__global__ void __launch_bounds__(256)
+flash_attn_mma_stages_split_q_cute(
+    cutlass::half_t *Q, cutlass::half_t *K, cutlass::half_t *V,
+    cutlass::half_t *output, int rows, int seqlen) {
+  // rows: B * H * seqlen, seqlen: N, kHeadDim: D
+  using namespace cute;
+  using Traits = fa_cute::FlashAttn2CuTeTraits<kHeadDim>;
+  using Element = typename Traits::Element;
+  using SmemLayoutQ = typename Traits::SmemLayoutQ;
+  using SmemLayoutKV = typename Traits::SmemLayoutKV;
+  static_assert(kHeadDim == 64 || kHeadDim == 128, "D=64 or 128 only");
+  static_assert(kStagesK >= 1, "kStagesK must be >= 1");
+
+  constexpr int kBr = 128;
+  constexpr int kBc = 64;
+  constexpr int kQTileElements = size(SmemLayoutQ{});
+  constexpr int kKVTileElements = size(SmemLayoutKV{});
+
+  // Shared memory: Q[128,D] + K[kStagesK,64,D] + V[1,64,D]
+  // __align__(1024): swizzle phase=0, cp.async 写 GMMA swizzle layout 同样要求
+  extern __shared__ __align__(1024) Element shm[];
+  auto sQ = make_tensor(make_smem_ptr(shm), SmemLayoutQ{});
+  // K smem 带 stage mode: (64, D, kStagesK)
+  using SmemLayoutKStage = decltype(tile_to_shape(
+      typename Traits::SmemLayoutAtom{},
+      make_shape(_64{}, Int<kHeadDim>{}, Int<kStagesK>{})));
+  auto sK = make_tensor(make_smem_ptr(shm + kQTileElements), SmemLayoutKStage{});
+  // V 单 buffer: (64, D)，无 stage mode
+  Element *v_base = shm + kQTileElements + kStagesK * kKVTileElements;
+  auto sV = make_tensor(make_smem_ptr(v_base), SmemLayoutKV{});
+
+  int tid = threadIdx.x;
+  int q_tile = blockIdx.y * (seqlen / kBr) + blockIdx.x;
+  int kv_tiles = seqlen / kBc;
+  // ★ 多 head K/V offset: local_tile coord 需加 blockIdx.y * kv_tiles 偏移，
+  // 否则所有 head 都读 head 0 的 K/V (参考 TMA 版 L6624 注释)
+  int kv_base = blockIdx.y * kv_tiles;
+
+  // Global memory tensors: [rows=B*H*N, D] row-major
+  auto mQ = make_tensor(make_gmem_ptr(Q), make_shape(rows, Int<kHeadDim>{}),
+                        make_stride(Int<kHeadDim>{}, _1{}));
+  auto mK = make_tensor(make_gmem_ptr(K), make_shape(rows, Int<kHeadDim>{}),
+                        make_stride(Int<kHeadDim>{}, _1{}));
+  auto mV = make_tensor(make_gmem_ptr(V), make_shape(rows, Int<kHeadDim>{}),
+                        make_stride(Int<kHeadDim>{}, _1{}));
+
+  auto gQ = local_tile(mQ, Shape<_128, Int<kHeadDim>>{}, make_coord(q_tile, _0{}));
+  // K/V 不在此处做 local_tile (无 remainder mode)，main loop 内按 tile 做 local_tile + partition_S
+  // (参考 TMA 版 producer L6624: 每次 local_tile 传入 blockIdx.y * kv_tiles + tile)
+
+  // G2S TiledCopy: 128-bit cp.async, 256 threads, 每线程 8 half = 128b
+  using g2s_copy_op = SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>;
+  using g2s_copy_atom = Copy_Atom<Copy_Traits<g2s_copy_op>, Element>;
+  using G2SCopy = decltype(make_tiled_copy(
+      g2s_copy_atom{},
+      make_layout(make_shape(Int<32>{}, Int<8>{}),    // ThrLayout: 32*8=256 threads
+                  make_stride(Int<8>{}, Int<1>{})),
+      make_layout(make_shape(Int<1>{}, Int<8>{}))));  // ValLayout: 1*8=8 half=128b
+  G2SCopy g2s_copy;
+  auto g2s_thr = g2s_copy.get_slice(tid);
+
+  // G2S partition: Q source(gmem) 和 destination(smem)
+  auto tQgQ = g2s_thr.partition_S(gQ);
+  auto tQsQ = g2s_thr.partition_D(sQ);
+  // K/V 的 smem destination (source 在 main loop 内每次 partition_S)
+  auto tKsK = g2s_thr.partition_D(sK);  // (CPY, CPY_M, CPY_K, kStagesK)
+  auto tVsV = g2s_thr.partition_D(sV);  // (CPY, CPY_M, CPY_K)  无 stage
+
+  // TiledMMA + S2R partition (完全复用 TMA 版 consumer 逻辑 L6696-6737)
+  typename Traits::TiledMma tiled_mma;
+  auto thr_mma = tiled_mma.get_thread_slice(tid);
+  auto tCrQ = thr_mma.partition_fragment_A(sQ);
+  // V non-swizzle 视图用于推导寄存器 layout (不能与 swizzle composition 冲突)
+  auto sVt0 = make_tensor(sV.data(), typename Traits::SmemLayoutVt{});
+  auto sVt0_ns = make_tensor(
+      sV.data(), get_nonswizzle_portion(typename Traits::SmemLayoutVt{}));
+  auto tCrV_layout = thr_mma.partition_fragment_B(sVt0_ns).layout();
+  auto tCrO = partition_fragment_C(tiled_mma, Shape<_128, Int<kHeadDim>>{});
+  clear(tCrO);
+
+  auto s2r_copy_q = make_tiled_copy_A(typename Traits::SmemCopyAtom{}, tiled_mma);
+  auto s2r_thr_q = s2r_copy_q.get_thread_slice(tid);
+  auto tQsQ_s2r = s2r_thr_q.partition_S(sQ);
+  auto s2r_copy_k = make_tiled_copy_B(typename Traits::SmemCopyAtom{}, tiled_mma);
+  auto s2r_thr_k = s2r_copy_k.get_thread_slice(tid);
+  auto s2r_copy_v = make_tiled_copy_B(
+      typename Traits::SmemCopyAtomTransposed{}, tiled_mma);
+  auto s2r_thr_v = s2r_copy_v.get_thread_slice(tid);
+
+  // Online softmax state
+  auto tCrO_rc = make_tensor(
+      tCrO.data(), fa_cute::convert_layout_acc_rowcol(tCrO.layout()));
+  constexpr int kRows = decltype(size<0>(tCrO_rc))::value;
+  float row_max[kRows], row_sum[kRows];
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+    row_max[r] = -INFINITY;
+    row_sum[r] = 0.0f;
+  }
+
+  float scale = rsqrtf(static_cast<float>(kHeadDim));
+
+  // ===== Step 1: Q 一次性 cp.async 加载 (split-Q 核心) =====
+  cute::copy(g2s_copy, tQgQ, tQsQ);
+  cp_async_fence();
+  cp_async_wait<0>();
+  __syncthreads();
+
+  // ===== Step 2: PREFETCH K 前 kStagesK-1 个 tile (仅 K，不预取 V) =====
+  int ismem_read = 0;
+  int ismem_write = 0;
+#pragma unroll
+  for (int s = 0; s < kStagesK - 1; ++s) {
+    if (s < kv_tiles) {
+      int kv_coord = kv_base + s;
+      auto gK_tile = local_tile(mK, Shape<_64, Int<kHeadDim>>{}, make_coord(kv_coord, _0{}));
+      auto tKgK_tile = g2s_thr.partition_S(gK_tile);
+      cute::copy(g2s_copy, tKgK_tile, tKsK(_, _, _, s));
+      cp_async_fence();
+      ++ismem_write;
+    }
+  }
+  if constexpr (kStagesK > 1) {
+    cp_async_wait<kStagesK - 2>();
+    __syncthreads();
+  }
+
+  // ===== Step 3: Main loop over KV tiles =====
+  for (int tile = 0; tile < kv_tiles; ++tile) {
+    // 3a: 提交 V[tile] (group V) + K_next (group K prefetch)
+    // V 单 buffer，每轮重写 sV；V 在 QK 之前发起，通过 QK+softmax 隐藏延迟
+    {
+      int kv_coord = kv_base + tile;
+      auto gV_tile = local_tile(mV, Shape<_64, Int<kHeadDim>>{}, make_coord(kv_coord, _0{}));
+      auto tVgV_tile = g2s_thr.partition_S(gV_tile);
+      cute::copy(g2s_copy, tVgV_tile, tVsV);
+    }
+    cp_async_fence();  // group V_tile (栈底)
+
+    if constexpr (kStagesK > 1) {
+      // Prefetch K[tile+kStagesK-1] -> sK[ismem_write] (group K_next, 栈顶)
+      int k_next = tile + kStagesK - 1;
+      if (k_next < kv_tiles) {
+        int kv_coord = kv_base + k_next;
+        auto gK_tile = local_tile(mK, Shape<_64, Int<kHeadDim>>{}, make_coord(kv_coord, _0{}));
+        auto tKgK_tile = g2s_thr.partition_S(gK_tile);
+        cute::copy(g2s_copy, tKgK_tile, tKsK(_, _, _, ismem_write));
+        cp_async_fence();  // group K_next (栈顶)
+      }
+    } else {
+      // kStagesK==1: 加载当前 K[tile] (smem_sel_next == smem_sel == 0)
+      int kv_coord = kv_base + tile;
+      auto gK_tile = local_tile(mK, Shape<_64, Int<kHeadDim>>{}, make_coord(kv_coord, _0{}));
+      auto tKgK_tile = g2s_thr.partition_S(gK_tile);
+      cute::copy(g2s_copy, tKgK_tile, tKsK(_, _, _, 0));
+      cp_async_fence();  // group K_current (栈顶)
+    }
+
+    // 3b: QK 前 wait K[tile] 就绪
+    if constexpr (kStagesK == 1) {
+      // kStagesK==1: V+K 都是当前 tile，wait<0> 等全部完成
+      // (kStagesK==1 是退化路径，V 延迟无法隐藏)
+      cp_async_wait<0>();
+      __syncthreads();
+    }
+    // kStagesK>1: K[tile] 已在上一轮循环末尾 wait<0> 完成，无需 wait
+
+    // Per-stage K smem (剥离 stage mode)
+    auto sK_stg = make_tensor(
+        make_smem_ptr(shm + kQTileElements + ismem_read * kKVTileElements),
+        SmemLayoutKV{});
+    auto tCrK = thr_mma.partition_fragment_B(sK_stg);
+    CUTE_STATIC_ASSERT_V(size(tCrK) == size(tCrV_layout));
+    auto tCrV = make_tensor(tCrK.data(), tCrV_layout);  // K 和 V 共享寄存器存储
+    auto tKsK_s2r = s2r_thr_k.partition_S(sK_stg);
+
+    // QK GEMM: S = Q @ K^T
+    auto tCrS = partition_fragment_C(tiled_mma, Shape<_128, _64>{});
+    clear(tCrS);
+    fa_cute::gemm_ss(tCrS, tCrQ, tCrK, tQsQ_s2r, tKsK_s2r,
+                     tiled_mma, s2r_copy_q, s2r_copy_k, s2r_thr_q, s2r_thr_k);
+
+    // 3c: Online softmax (纯寄存器操作，V[tile] 在后台加载)
+    auto scores = make_tensor(
+        tCrS.data(), fa_cute::convert_layout_acc_rowcol(tCrS.layout()));
+#pragma unroll
+    for (int r = 0; r < kRows; ++r) {
+      float tile_max = -INFINITY;
+#pragma unroll
+      for (int c = 0; c < size<1>(scores); ++c)
+        tile_max = fmaxf(tile_max, scores(r, c) * scale);
+      tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 1));
+      tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 2));
+      float nxt = fmaxf(row_max[r], tile_max);
+      float rs = __expf(row_max[r] - nxt);
+#pragma unroll
+      for (int c = 0; c < size<1>(tCrO_rc); ++c)
+        tCrO_rc(r, c) *= rs;
+      float ts = 0.0f;
+#pragma unroll
+      for (int c = 0; c < size<1>(scores); ++c) {
+        float p = __expf(scores(r, c) * scale - nxt);
+        scores(r, c) = p;
+        ts += p;
+      }
+      ts += __shfl_xor_sync(0xffffffff, ts, 1);
+      ts += __shfl_xor_sync(0xffffffff, ts, 2);
+      row_sum[r] = row_sum[r] * rs + ts;
+      row_max[r] = nxt;
+    }
+
+    // 3d: PV 前 wait V[tile] 就绪
+    // kStagesK>1: K_next 提交条件是 tile + kStagesK - 1 < kv_tiles。
+    //   已提交时栈顶有 K_next，wait<1> 只等 V_tile；
+    //   未提交（尾部 Sk-1 个 tile）时栈只有 V_tile，必须 wait<0>。
+    //   tile=0 必然已提交（PREFETCH 保证 kv_tiles >= kStagesK-1，且循环能跑说明 kv_tiles >= 1）。
+    if constexpr (kStagesK > 1) {
+      if (tile + kStagesK - 1 < kv_tiles) {
+        cp_async_wait<1>();
+      } else {
+        cp_async_wait<0>();
+      }
+    }
+    // kStagesK==1: 3b 已 wait<0>，V 已就绪
+    __syncthreads();
+
+    // PV GEMM: O = P @ V
+    // V smem 带 swizzle: partition_S 推导 smem 源地址映射，copy() 正确应用 swizzle
+    auto sVt_stg = make_tensor(sV.data(), typename Traits::SmemLayoutVt{});
+    auto tVsVt_s2r = s2r_thr_v.partition_S(sVt_stg);
+    auto tCrP = fa_cute::convert_type<Element>(tCrS);
+    auto tCrPv = make_tensor(
+        tCrP.data(),
+        fa_cute::convert_layout_acc_Aregs<typename Traits::TiledMma>(
+            tCrP.layout()));
+    fa_cute::gemm_rs(tCrO, tCrPv, tCrV, tVsVt_s2r,
+                     tiled_mma, s2r_copy_v, s2r_thr_v);
+    __syncthreads();  // 确保 ldmatrix V 完成后才能覆盖 V smem
+
+    // 3e: rescale 已合并到 3c softmax pass
+    // 循环末尾: kStagesK>1 且非最后 tile -> wait<0> 确保 K_next 完成
+    // (下一轮 QK 安全；同时保护 V/K smem 不被提前覆盖)
+    if constexpr (kStagesK > 1) {
+      if (tile + 1 < kv_tiles) {
+        cp_async_wait<0>();
+        __syncthreads();
+      }
+    }
+
+    // 更新 pipeline 指针
+    ismem_read = (ismem_read + 1) % kStagesK;
+    ismem_write = (ismem_write + 1) % kStagesK;
+  }
+
+  // ===== Step 4: Final normalize O = Oacc / l =====
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+    float inv_sum = 1.0f / row_sum[r];
+#pragma unroll
+    for (int c = 0; c < size<1>(tCrO_rc); ++c)
+      tCrO_rc(r, c) *= inv_sum;
+  }
+
+  // ===== Step 5: Epilogue - direct R->G store =====
+  auto tCrO_half = fa_cute::convert_type<Element>(tCrO);
+  auto mO = make_tensor(make_gmem_ptr(output),
+                        make_shape(rows, Int<kHeadDim>{}),
+                        make_stride(Int<kHeadDim>{}, _1{}));
+  auto gO = local_tile(mO, Shape<_128, Int<kHeadDim>>{}, make_coord(q_tile, _0{}));
+  auto tCgO = thr_mma.partition_C(gO);
+  copy(tCrO_half, tCgO);
+}
+
 template <int kHeadDim, typename TmaQ, typename TmaK, typename TmaV,
           int kStagesK = 1, int kStagesV = 1>
 __global__ void __launch_bounds__(384, 1)
@@ -6565,6 +6857,7 @@ flash_attn_tma_mma_ws_split_q_cute(
     CUTLASS_GRID_CONSTANT TmaK const tma_k,
     CUTLASS_GRID_CONSTANT TmaV const tma_v,
     cutlass::half_t *output, int rows, int seqlen) {
+  // rows: B * H * seqlen, seqlen: N, kHeadDim: D    
   using namespace cute;
   using Traits = fa_cute::FlashAttn2CuTeTraits<kHeadDim>;
   using Element = typename Traits::Element;
@@ -6880,6 +7173,7 @@ flash_attn_3_tma_mma_ws_split_q_cute(
     CUTLASS_GRID_CONSTANT TmaK const tma_k,
     CUTLASS_GRID_CONSTANT TmaV const tma_v,
     cutlass::half_t *output, int rows, int seqlen) {
+  // rows: B * H * seqlen, seqlen: N, kHeadDim: D    
   using namespace cute;
   using Traits = fa_cute::FlashAttn3CuTeTraits<kHeadDim>;
   using Element = typename Traits::Element;
@@ -7336,8 +7630,7 @@ static void test_flash_attn_3_cute_tma_copy_smoke() {
   }
   char label[64];
   snprintf(label, sizeof(label), "CuTe TMA copy smoke (D=%d)", kHeadDim);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-         max_err == 0.0f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", label, max_err);
 
   free(h_input);
   free(h_output);
@@ -7447,8 +7740,118 @@ static void test_flash_attn_3_tma_mma_ws_split_q_cute() {
   }
   char label[80];
   snprintf(label, sizeof(label), "FA3 CuTe TMA MMA WS (2 Consumer WG) (Sk=1, Sv=1, F32Acc, D=%d)", kHeadDim);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-         max_err < 5e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", label, max_err);
+
+  free(h_q);
+  free(h_k);
+  free(h_v);
+  free(h_o);
+  free(ref_o);
+  cudaFree(d_q);
+  cudaFree(d_k);
+  cudaFree(d_v);
+  cudaFree(d_o);
+}
+#endif
+
+#if defined(NOTES_V2_ENABLE_CUTE) && defined(NOTES_V2_ENABLE_TMA_MMA_WS)
+// FA2-style CuTe cp.async test: single consumer, Br=128, no TMA/WS.
+// kSeqlen=256 -> 2 Q tiles, covers multi-Q-tile path.
+// kStagesK=2 验证 cp.async pipeline + V 单 buffer + V/K group 策略正确性。
+template <int kHeadDim>
+static void test_flash_attn_mma_stages_split_q_cute() {
+  using namespace cute;
+  using Traits = fa_cute::FlashAttn2CuTeTraits<kHeadDim>;
+  using SmemLayoutQ = typename Traits::SmemLayoutQ;
+  using SmemLayoutKV = typename Traits::SmemLayoutKV;
+  constexpr int kBr = 128;
+  constexpr int kStagesK = 2;
+  constexpr int kSeqlen = 256;
+  constexpr int kCount = kSeqlen * kHeadDim;
+
+  half *h_q = (half *)malloc(kCount * sizeof(half));
+  half *h_k = (half *)malloc(kCount * sizeof(half));
+  half *h_v = (half *)malloc(kCount * sizeof(half));
+  half *h_o = (half *)malloc(kCount * sizeof(half));
+  float *ref_o = (float *)malloc(kCount * sizeof(float));
+  srand(42 + kHeadDim);
+  for (int idx = 0; idx < kCount; ++idx) {
+    h_q[idx] = __float2half(((float)rand() / RAND_MAX) * 2.0f - 1.0f);
+    h_k[idx] = __float2half(((float)rand() / RAND_MAX) * 2.0f - 1.0f);
+    h_v[idx] = __float2half(((float)rand() / RAND_MAX) * 2.0f - 1.0f);
+  }
+
+  // CPU FP32 naive attention reference
+  float scale = 1.0f / sqrtf((float)kHeadDim);
+  for (int row = 0; row < kSeqlen; ++row) {
+    float scores[kSeqlen];
+    float row_max = -INFINITY;
+    for (int col = 0; col < kSeqlen; ++col) {
+      float score = 0.0f;
+      for (int dim = 0; dim < kHeadDim; ++dim) {
+        score += __half2float(h_q[row * kHeadDim + dim]) *
+                 __half2float(h_k[col * kHeadDim + dim]);
+      }
+      scores[col] = score * scale;
+      row_max = max(row_max, scores[col]);
+    }
+    float row_sum = 0.0f;
+    for (int col = 0; col < kSeqlen; ++col) {
+      scores[col] = expf(scores[col] - row_max);
+      row_sum += scores[col];
+    }
+    for (int dim = 0; dim < kHeadDim; ++dim) {
+      float output = 0.0f;
+      for (int col = 0; col < kSeqlen; ++col) {
+        output += scores[col] * __half2float(h_v[col * kHeadDim + dim]);
+      }
+      ref_o[row * kHeadDim + dim] = output / row_sum;
+    }
+  }
+
+  half *d_q;
+  half *d_k;
+  half *d_v;
+  half *d_o;
+  check(cudaMalloc(&d_q, kCount * sizeof(half)), "cute fa2 cpasync alloc Q");
+  check(cudaMalloc(&d_k, kCount * sizeof(half)), "cute fa2 cpasync alloc K");
+  check(cudaMalloc(&d_v, kCount * sizeof(half)), "cute fa2 cpasync alloc V");
+  check(cudaMalloc(&d_o, kCount * sizeof(half)), "cute fa2 cpasync alloc O");
+  check(cudaMemcpy(d_q, h_q, kCount * sizeof(half), cudaMemcpyHostToDevice),
+        "cute fa2 cpasync H2D Q");
+  check(cudaMemcpy(d_k, h_k, kCount * sizeof(half), cudaMemcpyHostToDevice),
+        "cute fa2 cpasync H2D K");
+  check(cudaMemcpy(d_v, h_v, kCount * sizeof(half), cudaMemcpyHostToDevice),
+        "cute fa2 cpasync H2D V");
+
+  // 无需 TMA descriptor，直接传指针
+  auto kernel = flash_attn_mma_stages_split_q_cute<kHeadDim, kStagesK>;
+  // smem = Q[128*D] + K[Sk*64*D] + V[1*64*D]
+  constexpr int kSmemBytes =
+      (size(SmemLayoutQ{}) +
+       kStagesK * size(SmemLayoutKV{}) +
+       1 * size(SmemLayoutKV{})) * sizeof(cutlass::half_t);
+  check(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             kSmemBytes),
+        "cute fa2 cpasync set smem");
+  kernel<<<dim3(kSeqlen / kBr, 1), 256, kSmemBytes>>>(
+      reinterpret_cast<cutlass::half_t *>(d_q),
+      reinterpret_cast<cutlass::half_t *>(d_k),
+      reinterpret_cast<cutlass::half_t *>(d_v),
+      reinterpret_cast<cutlass::half_t *>(d_o), kSeqlen, kSeqlen);
+  check(cudaGetLastError(), "cute fa2 cpasync launch");
+  check(cudaDeviceSynchronize(), "cute fa2 cpasync sync");
+  check(cudaMemcpy(h_o, d_o, kCount * sizeof(half), cudaMemcpyDeviceToHost),
+        "cute fa2 cpasync D2H");
+
+  float max_err = 0.0f;
+  for (int idx = 0; idx < kCount; ++idx) {
+    max_err = max(max_err, fabsf(__half2float(h_o[idx]) - ref_o[idx]));
+  }
+  char label[96];
+  snprintf(label, sizeof(label),
+           "FA2 CuTe MMA Stages (Sk=%d, F32Acc, D=%d)", kStagesK, kHeadDim);
+  printf("| %-56s | %.3e |\n", label, max_err);
 
   free(h_q);
   free(h_k);
@@ -7575,8 +7978,7 @@ static void test_flash_attn_tma_mma_ws_split_q_cute() {
   }
   char label[80];
   snprintf(label, sizeof(label), "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=1, Sv=1, F32Acc, D=%d)", kHeadDim);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-         max_err < 5e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", label, max_err);
 
   free(h_q);
   free(h_k);
@@ -7618,8 +8020,7 @@ static void test_block_reduce(int N) {
   check(cudaMemcpy(&result, d_y, sizeof(float), cudaMemcpyDeviceToHost), "blockreduce D2H");
 
   float err = fabsf(result - (float)ref);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "BlockReduce", err,
-         err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "BlockReduce", err);
 
   free(h_a);
   cudaFree(d_a); cudaFree(d_y);
@@ -7659,8 +8060,7 @@ static void test_dot(int N) {
   check(cudaMemcpy(&result, d_y, sizeof(float), cudaMemcpyDeviceToHost), "dot D2H");
 
   float err = fabsf(result - (float)ref);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "Dot", err,
-         err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "Dot", err);
 
   // ---- Dot Vec4 ----
   check(cudaMemset(d_y, 0, sizeof(float)), "dot_vec4 zero Y");
@@ -7671,7 +8071,7 @@ static void test_dot(int N) {
 
   check(cudaMemcpy(&result, d_y, sizeof(float), cudaMemcpyDeviceToHost), "dot_vec4 D2H");
   float err_v4 = fabsf(result - (float)ref);
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "Dot-Vec4", err_v4, err_v4 < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "Dot-Vec4", err_v4);
 
   free(h_a); free(h_b);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_y);
@@ -7703,7 +8103,7 @@ static void test_relu(int N) {
     float err = fabsf(h_y[i] - expected);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "ReLU", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "ReLU", max_err);
 
   dim3 block64(64);
   relu_vec4<<<grid256, block64>>>(d_x, d_y, N);
@@ -7716,7 +8116,7 @@ static void test_relu(int N) {
     float err = fabsf(h_y[i] - expected);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "ReLU-Vec4", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "ReLU-Vec4", max_err);
 
   free(h_x); free(h_y);
   cudaFree(d_x); cudaFree(d_y);
@@ -7751,7 +8151,7 @@ static void test_elementwise(int N) {
     float err = fabsf(h_c[i] - (h_a[i] + h_b[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "ElemwiseAdd", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "ElemwiseAdd", max_err);
 
   dim3 block64(64);
   check(cudaMemset(d_c, 0, (size_t)N * sizeof(float)), "eadd_vec4 zero C");
@@ -7764,7 +8164,7 @@ static void test_elementwise(int N) {
     float err = fabsf(h_c[i] - (h_a[i] + h_b[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "ElemwiseAdd-Vec4", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "ElemwiseAdd-Vec4", max_err);
 
   free(h_a); free(h_b); free(h_c);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
@@ -7798,7 +8198,7 @@ static void test_histogram(int N) {
     float err = fabsf((float)(h_hist[i] - h_hist_ref[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "Histogram", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "Histogram", max_err);
 
   free(h_hist); free(h_hist_ref); free(h_idx);
   cudaFree(d_idx); cudaFree(d_hist);
@@ -7891,8 +8291,7 @@ static void test_merge_attn_states(int num_tokens, int num_heads,
     float err = fabsf(h_output[i] - h_output_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "MergeAttnStates", max_err,
-         max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "MergeAttnStates", max_err);
 
   // 边界测试: +inf LSE → 权重退化为 0（空 attention 段）
   h_prefix_lse[0] = INFINITY; // head 0, token 0 的 LSE = +inf
@@ -7914,8 +8313,7 @@ static void test_merge_attn_states(int num_tokens, int num_heads,
     float err = fabsf(h_output[d] - h_suffix_out[d]);
     if (err > inf_err) inf_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "MergeAttnStates-inf", inf_err,
-         inf_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "MergeAttnStates-inf", inf_err);
 
   free(h_prefix_out);
   free(h_suffix_out);
@@ -7973,7 +8371,7 @@ static void test_softmax(int N) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "OnlineSafeSoftmax", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "OnlineSafeSoftmax", max_err);
 
   // ---- Safe Softmax ----
   safe_softmax_per_token<<<grid, block>>>(d_x, d_y, N);
@@ -7985,7 +8383,7 @@ static void test_softmax(int N) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SafeSoftmax", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SafeSoftmax", max_err);
 
   // ---- Naive Softmax ----
   softmax_per_token<<<grid, block>>>(d_x, d_y, N);
@@ -7997,7 +8395,7 @@ static void test_softmax(int N) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "NaiveSoftmax", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "NaiveSoftmax", max_err);
 
   free(h_x); free(h_y); free(h_y_ref);
   cudaFree(d_x); cudaFree(d_y);
@@ -8042,7 +8440,7 @@ static void test_rms_norm(int N, int K) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "RMSNorm", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "RMSNorm", max_err);
 
   // ---- RMS Norm Vec4 ----
   dim3 block_rv4(32);
@@ -8055,7 +8453,7 @@ static void test_rms_norm(int N, int K) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "RMSNorm-Vec4", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "RMSNorm-Vec4", max_err);
 
   free(h_x); free(h_y); free(h_y_ref);
   cudaFree(d_x); cudaFree(d_y);
@@ -8106,7 +8504,7 @@ static void test_layer_norm(int N, int K) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "LayerNorm", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "LayerNorm", max_err);
 
   // ---- Layer Norm Vec4 ----
   dim3 block_lv4(32);
@@ -8119,7 +8517,7 @@ static void test_layer_norm(int N, int K) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "LayerNorm-Vec4", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "LayerNorm-Vec4", max_err);
 
   free(h_x); free(h_y); free(h_y_ref);
   cudaFree(d_x); cudaFree(d_y);
@@ -8172,7 +8570,7 @@ static void test_rope(int seq_len, int N) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "RoPE", max_err, max_err < 1e-4f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "RoPE", max_err);
 
   free(h_x);
   free(h_y);
@@ -8218,7 +8616,7 @@ static void test_mat_transpose(int row, int col) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "MatTranspose", max_err, max_err < 1e-6f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "MatTranspose", max_err);
 
   free(h_x);
   free(h_y);
@@ -8264,7 +8662,7 @@ static void test_mat_transpose_padded(int row, int col) {
     float err = fabsf(h_y[i] - h_y_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "MatTransposePadded", max_err, max_err < 1e-6f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "MatTransposePadded", max_err);
 
   free(h_x);
   free(h_y);
@@ -8312,7 +8710,7 @@ static void test_sgemv(int M, int K) {
     float err = fabsf(h_y[m] - h_y_ref[m]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SGEMV-K128", max_err, max_err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SGEMV-K128", max_err);
 
   // ---- SGEMV K32 ----
   check(cudaMemset(d_y, 0, M * sizeof(float)), "sgemv_k32 zero Y");
@@ -8327,7 +8725,7 @@ static void test_sgemv(int M, int K) {
     float err = fabsf(h_y[m] - h_y_ref[m]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SGEMV-K32", max_err, max_err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SGEMV-K32", max_err);
 
   // ---- SGEMV K16 ----
   free(h_a); free(h_x); free(h_y); free(h_y_ref);
@@ -8366,7 +8764,7 @@ static void test_sgemv(int M, int K) {
     float err = fabsf(h_y[m] - h_y_ref[m]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SGEMV-K16", max_err, max_err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SGEMV-K16", max_err);
 
   free(h_a); free(h_x); free(h_y); free(h_y_ref);
   cudaFree(d_a); cudaFree(d_x); cudaFree(d_y);
@@ -8423,7 +8821,7 @@ static void test_sgemm(int M, int N, int K) {
     float err = fabsf(h_c[i] - h_c_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SGEMM", max_err, max_err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SGEMM", max_err);
 
   // ---- SGEMM Vec4 (128×128 tile, 4×4 thread tile) ----
 
@@ -8440,7 +8838,7 @@ static void test_sgemm(int M, int N, int K) {
     float err = fabsf(h_c[i] - h_c_ref[i]);
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "SGEMM-Vec4", max_err, max_err < 1e-2f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "SGEMM-Vec4", max_err);
 
   free(h_a); free(h_b); free(h_c); free(h_c_ref);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
@@ -8515,7 +8913,7 @@ static void test_hgemm_mma(int M, int N, int K) {
     float err = fabsf(__half2float(h_c[i]) - __half2float(h_c_ref[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "HGEMM MMA", max_err, max_err < 1.0f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "HGEMM MMA", max_err);
 
   free(h_a); free(h_b); free(h_b_t); free(h_c); free(h_c_ref);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_b_t); cudaFree(d_c);
@@ -8593,7 +8991,7 @@ static void test_hgemm_swizzle(int M, int N, int K) {
     float err = fabsf(__half2float(h_c[i]) - __half2float(h_c_ref[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "HGEMM Swizzle + Reg2x", max_err, max_err < 1.0f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "HGEMM Swizzle + Reg2x", max_err);
 
   free(h_a); free(h_b); free(h_b_t); free(h_c); free(h_c_ref);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_b_t); cudaFree(d_c);
@@ -8662,8 +9060,8 @@ static void test_hgemm_cute(int M, int N, int K) {
     float err = fabsf(__half2float(h_c[i]) - __half2float(h_c_ref[i]));
     if (err > max_err) max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "HGEMM CuTe Swizzle + Reg2x", 
-         max_err, max_err < 1.0f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "HGEMM CuTe Swizzle + Reg2x", 
+         max_err);
 
   free(h_a); free(h_b); free(h_b_t); free(h_c); free(h_c_ref);
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_b_t); cudaFree(d_c);
@@ -8682,8 +9080,7 @@ static void test_hgemm_wgmma(int M, int N, int K) {
 
   // M, K must be divisible by tile dims
   if (M % BM != 0 || N % BN != 0 || K % BK != 0) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n",
-           "HGEMM WGMMA", "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s |\n", "HGEMM WGMMA", "SKIP");
     return;
   }
 
@@ -8764,8 +9161,7 @@ static void test_hgemm_wgmma(int M, int N, int K) {
     if (err > max_err)
       max_err = err;
   }
-  printf("| %-56s | %.6e | %-4s | %-19s |\n", "HGEMM TMA WGMMA WS (3-stage)", max_err,
-         max_err < 1.0f ? "PASS" : "FAIL", "None");
+  printf("| %-56s | %.3e |\n", "HGEMM TMA WGMMA WS (3-stage)", max_err);
 
   free(h_a);
   free(h_b);
@@ -8815,10 +9211,10 @@ static bool launch_hgemm_tma_mma_ws(int M, int N, int K, half *d_a,
         "tma_mma_ws function attributes");
   if (smem_bytes + attributes.sharedSizeBytes > size_t(max_smem)) {
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n",
-             kStages == 2 ? "HGEMM TMA MMA WS (S=2, SW=0)"
-                          : "HGEMM TMA MMA WS (S=3, SW=0)",
-             "SMEM SKIP", "SKIP", "None");
+      printf("| %-56s | %-9s |\n",
+             kStages == 2 ? "HGEMM TMA MMA WS (S=2, BLK_SW=0)"
+                          : "HGEMM TMA MMA WS (S=3, BLK_SW=0)",
+             "SMEM SKIP");
     return false;
   }
 
@@ -8840,8 +9236,7 @@ static bool launch_hgemm_tma_mma_ws(int M, int N, int K, half *d_a,
 static void test_hgemm_tma_mma_ws(int M, int N, int K) {
   constexpr int BM = 128, BN = 128, BK = 64;
   if (M % BM != 0 || N % BN != 0 || K % BK != 0) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "HGEMM TMA MMA WS", "SKIP",
-           "SKIP", "None");
+    printf("| %-56s | %-9s |\n", "HGEMM TMA MMA WS", "SKIP");
     return;
   }
 
@@ -8905,13 +9300,13 @@ static void test_hgemm_tma_mma_ws(int M, int N, int K) {
       for (int i = 0; i < M * N; ++i)
         max_err = fmaxf(max_err, fabsf(__half2float(h_c[i]) -
                                        __half2float(h_c_ref[i])));
-      printf("| %-56s | %.6e | %-4s | %-19s |\n",
+      printf("| %-56s | %.3e |\n",
              block_swizzle
-                 ? (stages == 2 ? "HGEMM TMA MMA WS (S=2, SW=1)"
-                                : "HGEMM TMA MMA WS (S=3, SW=1)")
-                 : (stages == 2 ? "HGEMM TMA MMA WS (S=2, SW=0)"
-                                : "HGEMM TMA MMA WS (S=3, SW=0)"),
-             max_err, max_err < 1.0f ? "PASS" : "FAIL", "None");
+                 ? (stages == 2 ? "HGEMM TMA MMA WS (S=2, BLK_SW=1)"
+                                : "HGEMM TMA MMA WS (S=3, BLK_SW=1)")
+                 : (stages == 2 ? "HGEMM TMA MMA WS (S=2, BLK_SW=0)"
+                                : "HGEMM TMA MMA WS (S=3, BLK_SW=0)"),
+             max_err);
     }
   }
 
@@ -9054,8 +9449,8 @@ static void test_flash_attn(int seqlen, int head_dim) {
     const char *acc_label = kMmaAcc ? "F32Acc" : "F16Acc";
     char label[64];
     snprintf(label, sizeof(label), "FA2 (kStagesK=2, Pad, %s)", acc_label);
-    printf("| %-56s | %.6e | %-4s | %-19s |\n", label,
-           max_err, max_err < 5e-1f ? "PASS" : "FAIL", "None");
+    printf("| %-56s | %.3e |\n", label,
+           max_err);
     free(h_o);
   }
 
@@ -9084,8 +9479,8 @@ static void test_flash_attn_tma_mma_ws_impl(int seqlen, int head_dim) {
   constexpr int kNumThreads = 384;
 
   if (seqlen % Br != 0 || seqlen % Bc != 0 || seqlen < Br) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n",
-           "FA2 TMA MMA WS (1 Consumer WG) (unaligned)", "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s |\n",
+           "FA2 TMA MMA WS (1 Consumer WG) (unaligned)", "SKIP");
     return;
   }
 
@@ -9258,8 +9653,8 @@ static void test_flash_attn_tma_mma_ws_impl(int seqlen, int head_dim) {
       (smem_bytes + attributes.sharedSizeBytes <= (size_t)max_smem);
   if (!smem_ok) {
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n",
-             "FA2 TMA MMA WS (1 Consumer WG) (SMEM SKIP)", "SMEM SKIP", "SKIP", "None");
+      printf("| %-56s | %-9s |\n",
+             "FA2 TMA MMA WS (1 Consumer WG) (SMEM SKIP)", "SMEM SKIP");
   } else {
     dim3 block(kNumThreads);
     dim3 grid((seqlen + Br - 1) / Br, B * H);
@@ -9313,10 +9708,8 @@ static void test_flash_attn_tma_mma_ws_impl(int seqlen, int head_dim) {
       snprintf(label, sizeof(label),
                "FA2 TMA MMA WS (1 Consumer WG) (%s)",
                acc_label);
-      printf("| %-56s | %.6e | %-4s | %-19s |\n",
-             label, max_err,
-             (checked && max_err < 5e-1f) ? "PASS" : (checked ? "FAIL" : "SKIP"),
-             "None");
+      printf("| %-56s | %.3e |\n",
+             label, max_err);
       free(h_o);
     }
   }
@@ -9334,8 +9727,8 @@ static void test_flash_attn_tma_mma_ws(int seqlen, int head_dim) {
   } else if (head_dim == 128) {
     test_flash_attn_tma_mma_ws_impl<128>(seqlen, head_dim);
   } else {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n",
-           "FA2 TMA MMA WS (1 Consumer WG) (D!=64/128)", "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s |\n",
+           "FA2 TMA MMA WS (1 Consumer WG) (D!=64/128)", "SKIP");
   }
 }
 
@@ -9363,8 +9756,8 @@ static void test_flash_attn_3_tma_ws_impl(int seqlen, int head_dim) {
   constexpr int kNumThreads = 384;
 
   if (seqlen % Br != 0 || seqlen % Bc != 0 || seqlen < Br) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n",
-           "FA3 TMA MMA WS (2 Consumer WG) (unaligned)", "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s |\n",
+           "FA3 TMA MMA WS (2 Consumer WG) (unaligned)", "SKIP");
     return;
   }
 
@@ -9447,8 +9840,7 @@ static void test_flash_attn_3_tma_ws_impl(int seqlen, int head_dim) {
       snprintf(label, sizeof(label), "FA3 TMA MMA WS (2 Consumer WG) (%s)",
                acc_label);
       if (g_debug)
-        printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP",
-               "None");
+        printf("| %-56s | %-9s |\n", label, "SMEM too large");
       free(h_o);
       continue;
     }
@@ -9472,9 +9864,7 @@ static void test_flash_attn_3_tma_ws_impl(int seqlen, int head_dim) {
     char label[64];
     snprintf(label, sizeof(label), "FA3 TMA MMA WS (2 Consumer WG) (%s)",
              acc_label);
-    printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-           (checked && max_err < 5e-1f) ? "PASS" : (checked ? "FAIL" : "SKIP"),
-           "None");
+    printf("| %-56s | %.3e |\n", label, max_err);
     free(h_o);
   }
 
@@ -9497,8 +9887,8 @@ static void test_flash_attn_3_tma_ws(int seqlen, int head_dim) {
     test_flash_attn_3_tma_ws_impl<128, 3>(seqlen, head_dim);
     test_flash_attn_3_tma_ws_impl<128, 4>(seqlen, head_dim);
   } else {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n",
-           "FA3 TMA MMA WS (2 Consumer WG) (D!=64/128)", "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s |\n",
+           "FA3 TMA MMA WS (2 Consumer WG) (D!=64/128)", "SKIP");
   }
 }
 #endif /* NOTES_V2_ENABLE_TMA_MMA_WS */
@@ -9638,16 +10028,17 @@ static void bench_hgemm_mma(int M, int N, int K) {
           : launch_timed_hgemm_mma<3, 0>(d_a, d_b_t, d_c, h_c, h_c_ref, M, N,
             K, size_c, start, stop, max_err, time_ms);
       char label[64];
-      snprintf(label, sizeof(label), "HGEMM MMA (S=%d, SW=%d)", stages, swizzle);
+      snprintf(label, sizeof(label), "HGEMM MMA (S=%d, BLK_SW=%d)", stages, swizzle);
       if (!ok) {
         if (g_debug)
-          printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM SKIP", "SKIP", "None");
+          printf("| %-56s | %-9s | %-19s |\n", label, "SMEM SKIP", "None");
       } else {
         float tflops = bench_hgemm_tflops(M, N, K, time_ms);
         char tflops_str[32];
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cublas_tflops, tflops / cublas_tflops);
-        printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-        max_err < 1.0f ? "PASS" : "FAIL", tflops_str);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", 
+                 tflops, cublas_tflops, tflops / cublas_tflops);
+        printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+        tflops_str);
       }
     }
   }
@@ -9758,16 +10149,17 @@ static void bench_hgemm_swizzle(int M, int N, int K) {
           : launch_timed_hgemm_swizzle<3, 0>(d_a, d_b_t, d_c, h_c, h_c_ref, M,
             N, K, size_c, start, stop, max_err, time_ms);
       char label[64];
-      snprintf(label, sizeof(label), "HGEMM Swizzle+Reg2x (S=%d, SW=%d)", stages, swizzle);
+      snprintf(label, sizeof(label), "HGEMM Swizzle+Reg2x (S=%d, BLK_SW=%d)", stages, swizzle);
       if (!ok) {
         if (g_debug)
-          printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM SKIP", "SKIP", "None");
+          printf("| %-56s | %-9s | %-19s |\n", label, "SMEM SKIP", "None");
       } else {
         float tflops = bench_hgemm_tflops(M, N, K, time_ms);
         char tflops_str[32];
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cublas_tflops, tflops / cublas_tflops);
-        printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-        max_err < 1.0f ? "PASS" : "FAIL", tflops_str);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", 
+                 tflops, cublas_tflops, tflops / cublas_tflops);
+        printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+        tflops_str);
       }
     }
   }
@@ -9829,7 +10221,7 @@ static void bench_hgemm_cute(int M, int N, int K) {
   for (int stages : {2, 3}) {
     for (int swizzle : {0, 1}) {
       char label[64];
-      snprintf(label, sizeof(label), "HGEMM CuTe Swizzle (S=%d, SW=%d)", stages, swizzle);
+      snprintf(label, sizeof(label), "HGEMM CuTe Swizzle (S=%d, BLK_SW=%d)", stages, swizzle);
       bool ok = false;
       float time_ms = 0, max_err = 0;
       if (stages == 2) {
@@ -9866,11 +10258,12 @@ static void bench_hgemm_cute(int M, int N, int K) {
         }
         float tflops = bench_hgemm_tflops(M, N, K, time_ms);
         char tflops_str[32];
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cublas_tflops, tflops / cublas_tflops);
-        printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-        max_err < 1.0f ? "PASS" : "FAIL", tflops_str);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", 
+                 tflops, cublas_tflops, tflops / cublas_tflops);
+        printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+        tflops_str);
       } else {
-        printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "LAUNCH ERR", "FAIL", "None");
+        printf("| %-56s | %-9s | %-19s |\n", label, "LAUNCH ERR", "None");
       }
     }
   }
@@ -9935,8 +10328,7 @@ static bool launch_timed_hgemm_wgmma(half *d_c, half *h_c, half *h_c_ref,
 static void bench_hgemm_wgmma(int M, int N, int K) {
   constexpr int BM = 128, BN = 128, BK = 64;
   if (M % BM != 0 || N % BN != 0 || K % BK != 0) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "HGEMM WGMMA (unaligned)", "SKIP", "SKIP",
-       "None");
+    printf("| %-56s | %-9s | %-19s |\n", "HGEMM WGMMA (unaligned)", "SKIP", "None");
     return;
   }
   size_t size_a = (size_t)M * K * sizeof(half);
@@ -9994,16 +10386,17 @@ static void bench_hgemm_wgmma(int M, int N, int K) {
           : launch_timed_hgemm_wgmma<3, 0>(d_c, h_c, h_c_ref, tma_a, tma_b, M, N, K,
             size_c, start, stop, max_err, time_ms);
       char label[64];
-      snprintf(label, sizeof(label), "HGEMM TMA WGMMA WS (S=%d, SW=%d)", stages, swizzle);
+      snprintf(label, sizeof(label), "HGEMM TMA WGMMA WS (S=%d, BLK_SW=%d)", stages, swizzle);
       if (!ok) {
         if (g_debug)
-          printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM SKIP", "SKIP", "None");
+          printf("| %-56s | %-9s | %-19s |\n", label, "SMEM SKIP", "None");
       } else {
         float tflops = bench_hgemm_tflops(M, N, K, time_ms);
         char tflops_str[32];
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cublas_tflops, tflops / cublas_tflops);
-        printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-        max_err < 1.0f ? "PASS" : "FAIL", tflops_str);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, 
+                 cublas_tflops, tflops / cublas_tflops);
+        printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+        tflops_str);
       }
     }
   }
@@ -10070,8 +10463,7 @@ static bool bench_launch_tma_mma_ws(
 static void bench_hgemm_tma_mma_ws(int M, int N, int K) {
   constexpr int BM = 128, BN = 128, BK = 64;
   if (M % BM != 0 || N % BN != 0 || K % BK != 0) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "HGEMM TMA MMA WS (unaligned)", "SKIP",
-       "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", "HGEMM TMA MMA WS (unaligned)", "SKIP", "None");
     return;
   }
   const size_t size_a = size_t(M) * K * sizeof(half);
@@ -10133,16 +10525,17 @@ static void bench_hgemm_tma_mma_ws(int M, int N, int K) {
             h_c_ref, size_c, tma_a, tma_b,
             start, stop, max_err, time_ms);
       char label[64];
-      snprintf(label, sizeof(label), "HGEMM TMA MMA WS (S=%d, SW=%d)", stages, swizzle);
+      snprintf(label, sizeof(label), "HGEMM TMA MMA WS (S=%d, BLK_SW=%d)", stages, swizzle);
       if (!ok) {
         if (g_debug)
-          printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM SKIP", "SKIP", "None");
+          printf("| %-56s | %-9s | %-19s |\n", label, "SMEM SKIP", "None");
       } else {
         float tflops = bench_hgemm_tflops(M, N, K, time_ms);
         char tflops_str[32];
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cublas_tflops, tflops / cublas_tflops);
-        printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-        max_err < 1.0f ? "PASS" : "FAIL", tflops_str);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, 
+                 cublas_tflops, tflops / cublas_tflops);
+        printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+        tflops_str);
       }
     }
   }
@@ -10202,8 +10595,8 @@ static void bench_fa_launch(int B, int H, int seqlen, int head_dim,
     char label[64];
     snprintf(label, sizeof(label), "FA2 (%s)",
              layout_name);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label,
-           "seqlen<Br", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label,
+           "seqlen<Br", "None");
     return;
   }
   size_t smem_bytes =
@@ -10257,7 +10650,7 @@ static void bench_fa_launch(int B, int H, int seqlen, int head_dim,
 
   int count = B * H * seqlen * head_dim;
   char label[64];
-  snprintf(label, sizeof(label), "FA2 (S=%d, %s, %s)", kStagesK,
+  snprintf(label, sizeof(label), "FA2 MMA Stages (Sk=%d, %s, %s)", kStagesK,
            layout_name, kMmaAccF32 ? "F32Acc" : "F16Acc");
   float max_err = 0.0f;
   bool checked = h_o_ref || ref_o;
@@ -10274,22 +10667,23 @@ static void bench_fa_launch(int B, int H, int seqlen, int head_dim,
     if (is_fail || should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       if (cudnn_tflops_f16 > 0)
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cudnn_tflops_f16, tflops / cudnn_tflops_f16);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", 
+                 tflops, cudnn_tflops_f16, tflops / cudnn_tflops_f16);
       else
         snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-             is_fail ? "FAIL" : "PASS", tflops_str);
+      printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+             tflops_str);
     }
   } else if (smem_ok) {
     float tflops = bench_fa_tflops(B, H, seqlen, head_dim, time_ms);
     if (should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "unchecked", "SKIP", tflops_str);
+      printf("| %-56s | %-9s | %-19s |\n", label, "unchecked", tflops_str);
     }
   } else {
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP", "None");
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large", "None");
   }
 
   cudaEventDestroy(start);
@@ -10319,7 +10713,7 @@ static void bench_fa_tma_mma_ws_launch(int B, int H, int seqlen, int head_dim,
     char label[64];
     snprintf(label, sizeof(label),
              "FA2 TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, unaligned)", kStagesK, kStagesV);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
     return;
   }
 
@@ -10410,23 +10804,24 @@ static void bench_fa_tma_mma_ws_launch(int B, int H, int seqlen, int head_dim,
     if (is_fail || should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       if (cudnn_tflops_f16 > 0)
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cudnn_tflops_f16, tflops / cudnn_tflops_f16);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", 
+                 tflops, cudnn_tflops_f16, tflops / cudnn_tflops_f16);
       else
         snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-             is_fail ? "FAIL" : "PASS", tflops_str);
+      printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+             tflops_str);
     }
   } else if (smem_ok) {
     float tflops = bench_fa_tflops(B, H, seqlen, head_dim, time_ms);
     if (should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "unchecked", "SKIP",
+      printf("| %-56s | %-9s | %-19s |\n", label, "unchecked",
              tflops_str);
     }
   } else {
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP",
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large",
              "None");
   }
 
@@ -10446,16 +10841,16 @@ static void bench_fa_tma_mma_ws_dispatch(int B, int H, int seqlen, int head_dim,
                                          half *d_q, half *d_k, half *d_v,
                                          half *d_o, float cudnn_tflops_f16) {
   if (head_dim == 64) {
-    bench_fa_tma_mma_ws_launch<64, kStagesK, kStagesV, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                       ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+    bench_fa_tma_mma_ws_launch<64, kStagesK, kStagesV, kMmaAccF32>(
+      B, H, seqlen, head_dim, h_o_ref, ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
   } else if (head_dim == 128) {
-    bench_fa_tma_mma_ws_launch<128, kStagesK, kStagesV, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                        ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+    bench_fa_tma_mma_ws_launch<128, kStagesK, kStagesV, kMmaAccF32>(
+      B, H, seqlen, head_dim, h_o_ref, ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
   } else {
     char label[64];
     snprintf(label, sizeof(label),
              "FA2 TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, D!=64/128)", kStagesK, kStagesV);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
   }
 }
 
@@ -10481,7 +10876,7 @@ static void bench_fa_3_tma_ws_launch(int B, int H, int seqlen, int head_dim,
     char label[80];
     snprintf(label, sizeof(label),
              "FA3 TMA MMA WS (2 Consumer WG) (Sk=%d, Sv=1, unaligned)", kStagesK);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
     return;
   }
 
@@ -10566,23 +10961,24 @@ static void bench_fa_3_tma_ws_launch(int B, int H, int seqlen, int head_dim,
     if (is_fail || should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       if (cudnn_tflops_f16 > 0)
-        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, cudnn_tflops_f16, tflops / cudnn_tflops_f16);
+        snprintf(tflops_str, sizeof(tflops_str), "%.1f/%.1f (%.2fx)", tflops, 
+                 cudnn_tflops_f16, tflops / cudnn_tflops_f16);
       else
         snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-             is_fail ? "FAIL" : "PASS", tflops_str);
+      printf("| %-56s | %.3e | %-19s |\n", label, max_err,
+             tflops_str);
     }
   } else if (smem_ok) {
     float tflops = bench_fa_tflops(B, H, seqlen, head_dim, time_ms);
     if (should_print_fa_tflops(kMmaAccF32, tflops)) {
       char tflops_str[32];
       snprintf(tflops_str, sizeof(tflops_str), "%.1f", tflops);
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "unchecked", "SKIP",
+      printf("| %-56s | %-9s | %-19s |\n", label, "unchecked",
              tflops_str);
     }
   } else {
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP",
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large",
              "None");
   }
 
@@ -10615,23 +11011,23 @@ static void bench_fa_3_tma_ws_dispatch(int B, int H, int seqlen, int head_dim,
                                                 ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
   } else if (head_dim == 128) {
     bench_fa_3_tma_ws_launch<128, 1, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                  ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+                                                 ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
     bench_fa_3_tma_ws_launch<128, 2, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                  ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+                                                 ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
     bench_fa_3_tma_ws_launch<128, 3, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                  ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+                                                 ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
     bench_fa_3_tma_ws_launch<128, 4, kMmaAccF32>(B, H, seqlen, head_dim, h_o_ref,
-                                                  ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
+                                                 ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f16);
   } else {
     char label[64];
     snprintf(label, sizeof(label), "FA3 TMA MMA WS (2 Consumer WG) (D!=64/128)");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
   }
 }
 
 #if defined(NOTES_V2_ENABLE_CUTE)
 template <int kHeadDim, int kStagesK = 1>
-static void bench_fa_3_cute_launch(
+static void bench_fa_3_tma_mma_ws_cute_launch(
     int B, int H, int seqlen, half *h_o_ref, float *ref_o,
     half *d_q, half *d_k, half *d_v, half *d_o,
     float cudnn_tflops_f32) {
@@ -10643,7 +11039,7 @@ static void bench_fa_3_cute_launch(
     char label[80];
     snprintf(label, sizeof(label),
              "FA3 CuTe TMA MMA WS (2 Consumer WG) (Sk=%d, Sv=1, unaligned)", kStagesK);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
     return;
   }
 
@@ -10675,7 +11071,7 @@ static void bench_fa_3_cute_launch(
     snprintf(label, sizeof(label),
              "FA3 CuTe TMA MMA WS (2 Consumer WG) (Sk=%d, Sv=1, SMEM)", kStagesK);
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP", "None");
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large", "None");
     return;
   }
   check(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -10732,8 +11128,7 @@ static void bench_fa_3_cute_launch(
     } else {
       snprintf(performance, sizeof(performance), "%.1f", tflops);
     }
-    printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-           is_fail ? "FAIL" : (checked ? "PASS" : "SKIP"), performance);
+    printf("| %-56s | %.3e | %-19s |\n", label, max_err, performance);
   }
 
   free(h_o);
@@ -10742,31 +11137,158 @@ static void bench_fa_3_cute_launch(
   cudaStreamDestroy(stream);
 }
 
-static void bench_fa_3_cute_dispatch(
+static void bench_fa_3_tma_mma_ws_cute_dispatch(
     int B, int H, int seqlen, int head_dim,
     half *h_o_ref, float *ref_o,
     half *d_q, half *d_k, half *d_v, half *d_o,
     float cudnn_tflops_f32) {
   if (head_dim == 64) {
-    bench_fa_3_cute_launch<64, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<64, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_3_cute_launch<64, 2>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<64, 2>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_3_cute_launch<64, 3>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<64, 3>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_3_cute_launch<64, 4>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<64, 4>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
   } else if (head_dim == 128) {
-    bench_fa_3_cute_launch<128, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<128, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_3_cute_launch<128, 2>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_3_tma_mma_ws_cute_launch<128, 2>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
   }
 }
 
+#if defined(NOTES_V2_ENABLE_CUTE) && defined(NOTES_V2_ENABLE_TMA_MMA_WS)
+// FA2-style CuTe cp.async bench: single consumer, Br=128, no TMA/WS.
+// V 单 buffer, V 在 QK 之前发起 cp.async, 通过 QK+softmax 隐藏 V 延迟.
+template <int kHeadDim, int kStagesK>
+static void bench_fa_2_mma_stages_cute_launch(
+    int B, int H, int seqlen, half *h_o_ref, float *ref_o,
+    half *d_q, half *d_k, half *d_v, half *d_o,
+    float cudnn_tflops_f32) {
+  using namespace cute;
+  using Traits = fa_cute::FlashAttn2CuTeTraits<kHeadDim>;
+  using SmemLayoutQ = typename Traits::SmemLayoutQ;
+  using SmemLayoutKV = typename Traits::SmemLayoutKV;
+  constexpr int kBr = 128;
+  if (seqlen < kBr || seqlen % kBr != 0 || seqlen % 64 != 0) {
+    char label[96];
+    snprintf(label, sizeof(label),
+             "FA2 CuTe MMA Stages (Sk=%d, unaligned)", kStagesK);
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
+    return;
+  }
+
+  int rows = B * H * seqlen;
+  auto kernel = flash_attn_mma_stages_split_q_cute<kHeadDim, kStagesK>;
+  int smem_bytes = (size(SmemLayoutQ{}) +
+                    kStagesK * size(SmemLayoutKV{}) +
+                    1 * size(SmemLayoutKV{})) *
+                   sizeof(cutlass::half_t);
+  bool smem_ok = check_smem_feasible((const void *)kernel, smem_bytes);
+  if (!smem_ok) {
+    char label[96];
+    snprintf(label, sizeof(label),
+             "FA2 CuTe MMA Stages (Sk=%d, SMEM)", kStagesK);
+    if (g_debug)
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large", "None");
+    return;
+  }
+  check(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             smem_bytes),
+        "bench cute fa2 cpasync set smem");
+
+  dim3 grid(seqlen / kBr, B * H);
+  cudaStream_t stream;
+  cudaEvent_t start;
+  cudaEvent_t stop;
+  check(cudaStreamCreate(&stream), "bench cute fa2 cpasync stream");
+  check(cudaEventCreate(&start), "bench cute fa2 cpasync event start");
+  check(cudaEventCreate(&stop), "bench cute fa2 cpasync event stop");
+  for (int warmup = 0; warmup < g_warmup; ++warmup) {
+    kernel<<<grid, 256, smem_bytes, stream>>>(
+        reinterpret_cast<cutlass::half_t *>(d_q),
+        reinterpret_cast<cutlass::half_t *>(d_k),
+        reinterpret_cast<cutlass::half_t *>(d_v),
+        reinterpret_cast<cutlass::half_t *>(d_o), rows, seqlen);
+  }
+  check(cudaStreamSynchronize(stream), "bench cute fa2 cpasync warmup sync");
+  check(cudaEventRecord(start, stream), "bench cute fa2 cpasync record start");
+  for (int repeat = 0; repeat < g_repeat; ++repeat) {
+    kernel<<<grid, 256, smem_bytes, stream>>>(
+        reinterpret_cast<cutlass::half_t *>(d_q),
+        reinterpret_cast<cutlass::half_t *>(d_k),
+        reinterpret_cast<cutlass::half_t *>(d_v),
+        reinterpret_cast<cutlass::half_t *>(d_o), rows, seqlen);
+  }
+  check(cudaEventRecord(stop, stream), "bench cute fa2 cpasync record stop");
+  check(cudaEventSynchronize(stop), "bench cute fa2 cpasync timing sync");
+  float time_ms = 0.0f;
+  check(cudaEventElapsedTime(&time_ms, start, stop),
+        "bench cute fa2 cpasync elapsed");
+  time_ms /= g_repeat;
+
+  size_t count = (size_t)rows * kHeadDim;
+  half *h_o = (half *)malloc(count * sizeof(half));
+  check(cudaMemcpy(h_o, d_o, count * sizeof(half), cudaMemcpyDeviceToHost),
+        "bench cute fa2 cpasync D2H");
+  float max_err = 0.0f;
+  bool checked = h_o_ref || ref_o;
+  if (checked) {
+    for (size_t idx = 0; idx < count; ++idx) {
+      float reference = h_o_ref ? __half2float(h_o_ref[idx]) : ref_o[idx];
+      max_err = max(max_err, fabsf(__half2float(h_o[idx]) - reference));
+    }
+  }
+  float tflops = bench_fa_tflops(B, H, seqlen, kHeadDim, time_ms);
+  char label[96];
+  snprintf(label, sizeof(label),
+           "FA2 CuTe MMA Stages (Sk=%d, F32Acc)", kStagesK);
+  bool is_fail = checked && max_err >= 5e-1f;
+  if (is_fail || should_print_fa_tflops(1, tflops)) {
+    char performance[32];
+    if (cudnn_tflops_f32 > 0.0f) {
+      snprintf(performance, sizeof(performance), "%.1f/%.1f (%.2fx)",
+               tflops, cudnn_tflops_f32, tflops / cudnn_tflops_f32);
+    } else {
+      snprintf(performance, sizeof(performance), "%.1f", tflops);
+    }
+    printf("| %-56s | %.3e | %-19s |\n", label, max_err, performance);
+  }
+
+  free(h_o);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaStreamDestroy(stream);
+}
+
+static void bench_fa_2_mma_stages_cute_dispatch(
+    int B, int H, int seqlen, int head_dim,
+    half *h_o_ref, float *ref_o,
+    half *d_q, half *d_k, half *d_v, half *d_o,
+    float cudnn_tflops_f32) {
+  if (head_dim == 64) {
+    bench_fa_2_mma_stages_cute_launch<64, 1>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    bench_fa_2_mma_stages_cute_launch<64, 2>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    bench_fa_2_mma_stages_cute_launch<64, 3>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    bench_fa_2_mma_stages_cute_launch<64, 4>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+  } else if (head_dim == 128) {
+    bench_fa_2_mma_stages_cute_launch<128, 1>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    bench_fa_2_mma_stages_cute_launch<128, 2>(B, H, seqlen, h_o_ref, ref_o,
+        d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+  }
+}
+#endif
+
 // FA2-style CuTe bench: single consumer, Br=128, no merge.
 template <int kHeadDim, int kStagesK, int kStagesV = 1>
-static void bench_fa_2_cute_launch(
+static void bench_fa_2_tma_mma_ws_cute_launch(
     int B, int H, int seqlen, half *h_o_ref, float *ref_o,
     half *d_q, half *d_k, half *d_v, half *d_o,
     float cudnn_tflops_f32) {
@@ -10778,8 +11300,9 @@ static void bench_fa_2_cute_launch(
   if (seqlen < kBr || seqlen % kBr != 0 || seqlen % 64 != 0) {
     char label[80];
     snprintf(label, sizeof(label),
-             "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, unaligned)", kStagesK, kStagesV);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SKIP", "SKIP", "None");
+             "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, unaligned)", 
+             kStagesK, kStagesV);
+    printf("| %-56s | %-9s | %-19s |\n", label, "SKIP", "None");
     return;
   }
 
@@ -10818,9 +11341,10 @@ static void bench_fa_2_cute_launch(
   if (!smem_ok) {
     char label[80];
     snprintf(label, sizeof(label),
-             "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, SMEM)", kStagesK, kStagesV);
+             "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, SMEM)", 
+             kStagesK, kStagesV);
     if (g_debug)
-      printf("| %-56s | %-12s | %-4s | %-19s |\n", label, "SMEM too large", "SKIP", "None");
+      printf("| %-56s | %-9s | %-19s |\n", label, "SMEM too large", "None");
     return;
   }
   check(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -10867,7 +11391,8 @@ static void bench_fa_2_cute_launch(
   float tflops = bench_fa_tflops(B, H, seqlen, kHeadDim, time_ms);
   char label[80];
   snprintf(label, sizeof(label),
-           "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, F32Acc)", kStagesK, kStagesV);
+           "FA2 CuTe TMA MMA WS (1 Consumer WG) (Sk=%d, Sv=%d, F32Acc)", 
+           kStagesK, kStagesV);
   bool is_fail = checked && max_err >= 5e-1f;
   if (is_fail || should_print_fa_tflops(1, tflops)) {
     char performance[32];
@@ -10877,8 +11402,7 @@ static void bench_fa_2_cute_launch(
     } else {
       snprintf(performance, sizeof(performance), "%.1f", tflops);
     }
-    printf("| %-56s | %.6e | %-4s | %-19s |\n", label, max_err,
-           is_fail ? "FAIL" : (checked ? "PASS" : "SKIP"), performance);
+    printf("| %-56s | %.3e | %-19s |\n", label, max_err, performance);
   }
 
   free(h_o);
@@ -10887,28 +11411,28 @@ static void bench_fa_2_cute_launch(
   cudaStreamDestroy(stream);
 }
 
-static void bench_fa_2_cute_dispatch(
+static void bench_fa_2_tma_mma_ws_cute_dispatch(
     int B, int H, int seqlen, int head_dim,
     half *h_o_ref, float *ref_o,
     half *d_q, half *d_k, half *d_v, half *d_o,
     float cudnn_tflops_f32) {
   if (head_dim == 64) {
-    bench_fa_2_cute_launch<64, 1, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<64, 1, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<64, 2, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<64, 2, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<64, 3, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<64, 3, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<64, 4, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<64, 4, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<64, 2, 2>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<64, 2, 2>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
   } else if (head_dim == 128) {
-    bench_fa_2_cute_launch<128, 1, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<128, 1, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<128, 2, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<128, 2, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
-    bench_fa_2_cute_launch<128, 3, 1>(B, H, seqlen, h_o_ref, ref_o,
+    bench_fa_2_tma_mma_ws_cute_launch<128, 3, 1>(B, H, seqlen, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
   }
 }
@@ -10984,7 +11508,7 @@ static void bench_flash_attn(int B, int H, int N, int D) {
   int seqlen = N, head_dim = D;
 
   if (head_dim != 64 && head_dim != 128) {
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "FlashAttention-2", "unsupported D", "SKIP", "None");
+    printf("| %-56s | %-9s | %-19s |\n", "FlashAttention-2", "unsupported D", "None");
     return;
   }
 
@@ -11083,7 +11607,7 @@ static void bench_flash_attn(int B, int H, int N, int D) {
 
   if (g_bench_fa3_cute_only) {
 #if defined(NOTES_V2_ENABLE_CUTE) && defined(NOTES_V2_ENABLE_TMA_MMA_WS)
-    bench_fa_3_cute_dispatch(
+    bench_fa_3_tma_mma_ws_cute_dispatch(
         B, H, seqlen, head_dim, h_o_ref, ref_o,
         d_q, d_k, d_v, d_o, cudnn_tflops_f32);
 #endif
@@ -11170,6 +11694,13 @@ static void bench_flash_attn(int B, int H, int N, int D) {
       bench_fa_launch<64, 2, 0, 0, 0, 1>(B, H, seqlen, head_dim, h_o_ref, ref_o,
                                          d_q, d_k, d_v, d_o, cudnn_tflops_f32);
     }
+#if defined(NOTES_V2_ENABLE_CUTE)
+    {
+      cudaDeviceSynchronize();
+      bench_fa_2_mma_stages_cute_dispatch(
+        B, H, seqlen, head_dim, h_o_ref, ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    }
+#endif
 #if defined(NOTES_V2_ENABLE_TMA_MMA_WS)
     {
       cudaDeviceSynchronize();
@@ -11212,10 +11743,10 @@ static void bench_flash_attn(int B, int H, int N, int D) {
                                      d_q, d_k, d_v, d_o, cudnn_tflops_f32);
 #if defined(NOTES_V2_ENABLE_CUTE)
       cudaDeviceSynchronize();
-      bench_fa_2_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
+      bench_fa_2_tma_mma_ws_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
                                d_q, d_k, d_v, d_o, cudnn_tflops_f32);
       cudaDeviceSynchronize();
-      bench_fa_3_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
+      bench_fa_3_tma_mma_ws_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
                                d_q, d_k, d_v, d_o, cudnn_tflops_f32);
 #endif
     }
@@ -11291,6 +11822,13 @@ static void bench_flash_attn(int B, int H, int N, int D) {
       bench_fa_launch<128, 2, 0, 0, 0, 1>(B, H, seqlen, head_dim, h_o_ref, ref_o,
                                           d_q, d_k, d_v, d_o, cudnn_tflops_f32);
     }
+#if defined(NOTES_V2_ENABLE_CUTE)
+    {
+      cudaDeviceSynchronize();
+      bench_fa_2_mma_stages_cute_dispatch(
+        B, H, seqlen, head_dim, h_o_ref, ref_o, d_q, d_k, d_v, d_o, cudnn_tflops_f32);
+    }
+#endif    
 #if defined(NOTES_V2_ENABLE_TMA_MMA_WS)
     {
       cudaDeviceSynchronize();
@@ -11327,10 +11865,10 @@ static void bench_flash_attn(int B, int H, int N, int D) {
                                      d_q, d_k, d_v, d_o, cudnn_tflops_f32);
     #if defined(NOTES_V2_ENABLE_CUTE)
       cudaDeviceSynchronize();
-      bench_fa_2_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
+      bench_fa_2_tma_mma_ws_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
                d_q, d_k, d_v, d_o, cudnn_tflops_f32);
       cudaDeviceSynchronize();
-      bench_fa_3_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
+      bench_fa_3_tma_mma_ws_cute_dispatch(B, H, seqlen, head_dim, h_o_ref, ref_o,
                d_q, d_k, d_v, d_o, cudnn_tflops_f32);
     #endif
     }
@@ -11374,10 +11912,8 @@ static void test_swizzle_equiv() {
   swizzle_equiv_check_one<16>(total, fail);
   swizzle_equiv_check_one<32>(total, fail);
   swizzle_equiv_check_one<64>(total, fail);
-  printf("| %-56s | %-12s | %-4s | %-19s |\n",
-         "Swizzle v1/v2 equiv (host)", "N/A",
-         fail == 0 ? "PASS" : "FAIL",
-         fail == 0 ? "ALL PASS" : "FAIL");
+  printf("| %-56s | %-9s |\n",
+         "Swizzle v1/v2 equiv (host)", fail == 0 ? "ALL PASS" : "FAIL");
   printf("  total=%ld fail=%ld\n", total, fail);
 }
 
@@ -11450,8 +11986,8 @@ int main(int argc, char *argv[]) {
 
   if (g_swizzle_eq_check) {
     printf("=== notes-v2.cu swizzle v1/v2 equivalence check ===\n");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS/cu{BLAS,DNN}");
-    printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
     test_swizzle_equiv();
     printf("=== Done ===\n");
     return 0;
@@ -11460,24 +11996,32 @@ int main(int argc, char *argv[]) {
 #if defined(NOTES_V2_ENABLE_CUTE) && defined(NOTES_V2_ENABLE_TMA_MMA_WS)
   if (argc >= 2 && strcmp(argv[1], "--fa3-cute") == 0) {
     printf("=== CuTe FA3 TMA MMA WS correctness ===\n");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS");
-    printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
     test_flash_attn_3_tma_mma_ws_split_q_cute<64>();
     test_flash_attn_3_tma_mma_ws_split_q_cute<128>();
     return 0;
   }
   if (argc >= 2 && strcmp(argv[1], "--fa3-cute-tma-smoke") == 0) {
     printf("=== CuTe TMA copy smoke ===\n");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS");
-    printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
     test_flash_attn_3_cute_tma_copy_smoke<64>();
     test_flash_attn_3_cute_tma_copy_smoke<128>();
     return 0;
   }
+  if (argc >= 2 && strcmp(argv[1], "--fa2-cute-cpasync") == 0) {
+    printf("=== CuTe FA2 MMA Stages (cp.async) correctness ===\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
+    test_flash_attn_mma_stages_split_q_cute<64>();
+    test_flash_attn_mma_stages_split_q_cute<128>();
+    return 0;
+  }
   if (argc >= 2 && strcmp(argv[1], "--fa2-cute") == 0) {
     printf("=== CuTe FA2 TMA MMA WS correctness ===\n");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS");
-    printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
     test_flash_attn_tma_mma_ws_split_q_cute<64>();
     test_flash_attn_tma_mma_ws_split_q_cute<128>();
     return 0;
@@ -11489,8 +12033,10 @@ int main(int argc, char *argv[]) {
     printf("HGEMM: M=%d N=%d K=%d   FA: B=%d H=%d N=%d D=%d\n",
            g_bench_M, g_bench_N, g_bench_K,
            g_bench_B, g_bench_H, g_bench_Nfa, g_bench_D);
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS/cu{BLAS,DNN}");
-    printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+    printf("| %-56s | %-9s | %-19s |\n", "Kernel", "Max Err", "TFLOPS/cu{BLAS,DNN}");
+    printf(
+      "|----------------------------------------------------------|-----------|---------------------|\n"
+    );
 
     if (g_bench_hgemm || g_bench_hgemm_all || g_bench_all) {
 #if defined(NOTES_V2_ENABLE_CUTE)
@@ -11523,8 +12069,8 @@ int main(int argc, char *argv[]) {
       K = atoi(argv[4]);
     }
     printf("=== SM120 TMA MMA WS validation ===\n");
-    printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS/cu{BLAS,DNN}");
-    printf("|----------------------------------------------------------|--------------|------|---------------------------|\n");
+    printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+    printf("|----------------------------------------------------------|----------|\n");
     test_hgemm_tma_mma_ws(M, N, K);
     return 0;
   }
@@ -11533,8 +12079,8 @@ int main(int argc, char *argv[]) {
   if (argc > 3) { M = atoi(argv[1]); N = atoi(argv[2]); K = atoi(argv[3]); }
 
   printf("=== notes-v2.cu verification harness ===\n");
-  printf("| %-56s | %-12s | %-4s | %-19s |\n", "Kernel", "Max Err", "Pass", "TFLOPS/cu{BLAS,DNN}");
-  printf("|----------------------------------------------------------|--------------|------|---------------------|\n");
+  printf("| %-56s | %-9s |\n", "Kernel", "Max Err");
+  printf("|----------------------------------------------------------|-----------|\n");
 
   test_block_reduce(N);
   test_dot(N);
