@@ -2191,6 +2191,8 @@ __global__ void __launch_bounds__(kNumThreads, 1)
   }
 }
 
+#endif // NOTES_V2_ENABLE_TMA_MMA_WS
+
 #if defined(NOTES_V2_ENABLE_CUTE)
 namespace fa_cute {
 using namespace cute;
@@ -2485,9 +2487,9 @@ CUTE_DEVICE void gemm_rs(
 }
 
 }  // namespace fa_cute
+#endif // NOTES_V2_ENABLE_CUTE
 
-// =============================================================================
-// FA2 CuTe cp.async MMA Stages Split-Q (no TMA, no Warp Specialization)
+#if defined(NOTES_V2_ENABLE_CUTE)
 // =============================================================================
 // 是 flash_attn_tma_mma_ws_split_q_cute 的简化版：去掉 TMA producer/consumer WS，
 // 改用 cp.async + 统一 pipeline（参考 hgemm_mma_stages_tn_cute 的 cute::copy 用法
@@ -2625,7 +2627,8 @@ flash_attn_mma_stages_split_q_cute(
     row_sum[r] = 0.0f;
   }
 
-  float scale = rsqrtf(static_cast<float>(kHeadDim));
+  // scale 预乘 M_LOG2E: exp2f(x*scale) == expf(x/sqrt(D)), FMA 友好
+  float scale = rsqrtf(static_cast<float>(kHeadDim)) * M_LOG2E;
 
   // ===== Step 1: Q 一次性 cp.async 加载 (split-Q 核心) =====
   cute::copy(g2s_copy, tQgQ, tQsQ);
@@ -2719,14 +2722,14 @@ flash_attn_mma_stages_split_q_cute(
       tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 1));
       tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 2));
       float nxt = fmaxf(row_max[r], tile_max);
-      float rs = __expf(row_max[r] - nxt);
+      float rs = exp2f(row_max[r] - nxt);
 #pragma unroll
       for (int c = 0; c < size<1>(tCrO_rc); ++c)
         tCrO_rc(r, c) *= rs;
       float ts = 0.0f;
 #pragma unroll
       for (int c = 0; c < size<1>(scores); ++c) {
-        float p = __expf(scores(r, c) * scale - nxt);
+        float p = exp2f(scores(r, c) * scale - nxt);
         scores(r, c) = p;
         ts += p;
       }
@@ -2797,7 +2800,11 @@ flash_attn_mma_stages_split_q_cute(
   auto tCgO = thr_mma.partition_C(gO);
   copy(tCrO_half, tCgO);
 }
+#endif // NOTES_V2_ENABLE_CUTE
 
+#if defined(NOTES_V2_ENABLE_TMA_MMA_WS)
+
+#if defined(NOTES_V2_ENABLE_CUTE)
 template <int kHeadDim, typename TmaQ, typename TmaK, typename TmaV,
           int kStagesK = 1, int kStagesV = 1>
 __global__ void __launch_bounds__(384, 1)
@@ -3018,7 +3025,8 @@ flash_attn_tma_mma_ws_split_q_cute(
     for (int s = 0; s < kStagesV; ++s)
       CtaBarrier::arrive(&v_empty[s]);
 
-    float scale = rsqrtf(static_cast<float>(kHeadDim));
+    // scale 预乘 M_LOG2E: exp2f(x*scale) == expf(x/sqrt(D)), FMA 友好
+    float scale = rsqrtf(static_cast<float>(kHeadDim)) * M_LOG2E;
     for (int tile = 0; tile < kv_tiles; ++tile) {
       int k_stg = tile % kStagesK;
       int k_phase = (tile / kStagesK) & 1;
@@ -3055,14 +3063,14 @@ flash_attn_tma_mma_ws_split_q_cute(
         tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 1));
         tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 2));
         float nxt = fmaxf(row_max[r], tile_max);
-        float rs = __expf(row_max[r] - nxt);
+        float rs = exp2f(row_max[r] - nxt);
 #pragma unroll
         for (int c = 0; c < size<1>(tCrO_rc); ++c)
           tCrO_rc(r, c) *= rs;
         float ts = 0.0f;
 #pragma unroll
         for (int c = 0; c < size<1>(scores); ++c) {
-          float p = __expf(scores(r, c) * scale - nxt);
+          float p = exp2f(scores(r, c) * scale - nxt);
           scores(r, c) = p;
           ts += p;
         }
@@ -3113,7 +3121,9 @@ flash_attn_tma_mma_ws_split_q_cute(
     copy(tCrO_half, tCgO);
   }
 }
+#endif // NOTES_V2_ENABLE_CUTE
 
+#if defined(NOTES_V2_ENABLE_CUTE)
 template <int kHeadDim, typename TmaQ, typename TmaK, typename TmaV,
           int kStagesK = 1>
 __global__ void __launch_bounds__(384, 1)
@@ -3317,7 +3327,8 @@ flash_attn_3_tma_mma_ws_split_q_cute(
       CtaBarrier::arrive(&k_empty[consumer_id][s]);
     CtaBarrier::arrive(&v_empty[consumer_id]);
 
-    float scale = rsqrtf(static_cast<float>(kHeadDim));
+    // scale 预乘 M_LOG2E: exp2f(x*scale) == expf(x/sqrt(D)), FMA 友好
+    float scale = rsqrtf(static_cast<float>(kHeadDim)) * M_LOG2E;
     int local_iter = 0;
     for (int tile = consumer_id; tile < kv_tiles;
          tile += kNumConsumers, ++local_iter) {
@@ -3356,14 +3367,14 @@ flash_attn_3_tma_mma_ws_split_q_cute(
         tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 1));
         tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, 2));
         float nxt = fmaxf(row_max[r], tile_max);
-        float rs = __expf(row_max[r] - nxt);
+        float rs = exp2f(row_max[r] - nxt);
 #pragma unroll
         for (int c = 0; c < size<1>(tCrO_rc); ++c)
           tCrO_rc(r, c) *= rs;
         float ts = 0.0f;
 #pragma unroll
         for (int c = 0; c < size<1>(scores); ++c) {
-          float p = __expf(scores(r, c) * scale - nxt);
+          float p = exp2f(scores(r, c) * scale - nxt);
           scores(r, c) = p;
           ts += p;
         }
@@ -3408,8 +3419,8 @@ flash_attn_3_tma_mma_ws_split_q_cute(
 #pragma unroll
       for (int r = 0; r < kRows; ++r) {
         float mg = fmaxf(row_max[r], o_max[r]);
-        float lhs = __expf(row_max[r] - mg);
-        float rhs = __expf(o_max[r] - mg);
+        float lhs = exp2f(row_max[r] - mg);
+        float rhs = exp2f(o_max[r] - mg);
         float ms = lhs * row_sum[r] + rhs * o_sum[r];
 #pragma unroll
         for (int c = 0; c < size<1>(tCrO_rc); ++c) {
@@ -3431,8 +3442,9 @@ flash_attn_3_tma_mma_ws_split_q_cute(
     }
   }
 }
+#endif // NOTES_V2_ENABLE_CUTE
 
-
+#if defined(NOTES_V2_ENABLE_CUTE)
 template <int kHeadDim, typename TmaQ>
 __global__ void flash_attn_3_cute_tma_copy_smoke(
   CUTLASS_GRID_CONSTANT TmaQ const tma_q,
@@ -3473,5 +3485,6 @@ __global__ void flash_attn_3_cute_tma_copy_smoke(
     output[(blockIdx.x * 64 + row) * kHeadDim + col] = sQ(row, col);
   }
 }
-#endif
+#endif // NOTES_V2_ENABLE_CUTE
+
 #endif // END NOTES_V2_ENABLE_TMA_MMA_WS
