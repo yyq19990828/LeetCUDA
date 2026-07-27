@@ -2246,6 +2246,7 @@ struct FlashAttn2CuTeTraits {
   using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, Element>;
 };
 
+
 // FlashAttn3CuTeTraits: FA3-style CuTe kernel 编译期配置 (Br=Bc=64, 双 consumer WG)。
 // 所有 layout/atom/tiler 都是编译期类型, kernel body 只接收实例化后的类型。
 //
@@ -2802,7 +2803,6 @@ flash_attn_mma_stages_split_q_cute(
 }
 #endif // NOTES_V2_ENABLE_CUTE
 
-#if defined(NOTES_V2_ENABLE_TMA_MMA_WS)
 
 #if defined(NOTES_V2_ENABLE_CUTE)
 template <int kHeadDim, typename TmaQ, typename TmaK, typename TmaV,
@@ -3487,4 +3487,4 @@ __global__ void flash_attn_3_cute_tma_copy_smoke(
 }
 #endif // NOTES_V2_ENABLE_CUTE
 
-#endif // END NOTES_V2_ENABLE_TMA_MMA_WS
+
