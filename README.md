@@ -24,7 +24,7 @@
 </div>
 -->
 
-Please also check out our production-ready **Kernel Library** for **Large Headdim Attention**: [`ffpa-attn`](https://github.com/xlite-dev/ffpa-attn) - Fast and Memory-Efficient Exact Attention (**BF16/FP16/FP8/FP4**) for Large Headdim, **1.5x~15x**🔥🔥 speedup over PyTorch SDPA. 
+Please also check out our production-ready **Kernel Library**: [**ffpa-attn**](https://github.com/xlite-dev/ffpa-attn) - Fast and Memory-Efficient Exact Attention (**BF16/FP16/FP8/FP4**) for Large Headdim, **1.5x~15x**🔥🔥 speedup over PyTorch SDPA. 
 
 <img width="9600" height="3600" alt="image" src="https://github.com/user-attachments/assets/1ec7d63f-711b-479d-b352-7ac7b7bff5a8" />
 
