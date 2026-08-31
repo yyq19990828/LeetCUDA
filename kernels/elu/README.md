@@ -1,4 +1,5 @@
 # Elu
+
 ## 0x00 说明
 
 ELU（Exponential Linear Unit）激活函数的公式如下：
@@ -22,7 +23,6 @@ $$
 - [X] elu_f16x8_kernel(fp16向量化版本)
 - [X] elu_f16x8_pack_kernel(fp16向量化，pack版本)
 - [X] PyTorch bindings
-
 
 ## 测试
 

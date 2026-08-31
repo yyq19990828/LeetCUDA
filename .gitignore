@@ -35,3 +35,4 @@ kernels学习/
 .plans
 .tmp
 *.o
+.clangd

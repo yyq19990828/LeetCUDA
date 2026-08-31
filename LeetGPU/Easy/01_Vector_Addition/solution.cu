@@ -6,7 +6,6 @@ __global__ void vector_add(const float* A, const float* B, float* C, int N) {
   if (idx < N) {
     C[idx] = A[idx] + B[idx];
   }
-
 }
 
 // A, B, C are device pointers (i.e. pointers to memory on the GPU).
