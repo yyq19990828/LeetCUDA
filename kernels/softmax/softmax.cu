@@ -204,7 +204,7 @@ __global__ void safe_softmax_f32_per_token_kernel(float *x, float *y, int N) {
 
   float val = (idx < N) ? x[idx] : -FLT_MAX;
   float max_val = block_reduce_max_f32<NUM_THREADS>(val); // block max
-  float exp_val = (idx < N) ? expf(x[idx] - max_val) : 0.0f;
+  float exp_val = (idx < N) ? expf(val - max_val) : 0.0f;
   float exp_sum = block_reduce_sum_f32<NUM_THREADS>(exp_val); // block sum
   // e^x_i/sum(e^x_0,...,e^x_n-1)
   if (idx < N)
@@ -305,19 +305,22 @@ __global__ void safe_softmax_f16x8_pack_f32_per_token_kernel(half *x, half *y,
   }
   max_val = block_reduce_max_f32<NUM_THREADS>(max_val); // block max
 
+  // store the exp_vals
+  float exp_vals[8] = {0.0f};
   float exp_sum = 0.0f;
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
-    float exp_val = expf(__half2float(pack_x[i]) - max_val);
-    exp_sum += (((idx + i) < N) ? exp_val : 0.0f);
+    float val = __half2float(pack_x[i]);
+    float exp_val = (((idx + i) < N) ? expf(val - max_val) : 0.0f);
+    exp_vals[i] = exp_val;
+    exp_sum += exp_val;
   }
   exp_sum = block_reduce_sum_f32<NUM_THREADS>(exp_sum); // block sum
 
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
     // e^x_i/sum(e^x_0,...,e^x_n-1)
-    float exp_val = expf(__half2float(pack_x[i]) - max_val);
-    pack_y[i] = __float2half_rn(exp_val / exp_sum);
+    pack_y[i] = __float2half_rn(exp_vals[i] / exp_sum);
   }
   // reinterpret as float4 and store 128 bits in 1 memory issue.
   if ((idx + 7) < N) {
@@ -348,7 +351,8 @@ __global__ void online_safe_softmax_f32_per_token_kernel(const float *x,
   __syncthreads();
 
   if (local_tid < WARP_SIZE) {
-    MD block_res = shared[local_tid];
+    MD block_res =
+        local_tid < WARP_NUM ? shared[local_tid] : MD{-FLT_MAX, 0.0f};
     block_res = warp_reduce_md_op<WARP_NUM>(block_res);
     if (local_tid == 0) {
       shared[0] = block_res;
@@ -389,7 +393,8 @@ online_safe_softmax_f32x4_pack_per_token_kernel(float *x, float *y, int N) {
   __syncthreads();
   // do block reduce
   if (local_tid < WARP_SIZE) {
-    MD block_res = shared[local_tid];
+    MD block_res =
+        local_tid < WARP_NUM ? shared[local_tid] : MD{-FLT_MAX, 0.0f};
     block_res = warp_reduce_md_op<WARP_NUM>(block_res);
     if (local_tid == 0)
       shared[0] = block_res;

@@ -23,6 +23,14 @@
 
 #include "cublas_v2.h"
 
+#define CHECK_CUBLAS(call)                                                     \
+  do {                                                                         \
+    cublasStatus_t status = (call);                                            \
+    if (status != CUBLAS_STATUS_SUCCESS) {                                     \
+      throw std::runtime_error("cuBLAS call failed");                         \
+    }                                                                          \
+  } while (0)
+
 // =============================================================================
 // cublas_sgemm: 标准FP32矩阵乘法
 // =============================================================================
@@ -46,10 +54,10 @@
 void cublas_sgemm(float *A, float *B, float *C, size_t M, size_t N, size_t K) {
   // 创建cuBLAS句柄
   cublasHandle_t handle = nullptr;
-  cublasCreate(&handle);
+  CHECK_CUBLAS(cublasCreate(&handle));
 
   // 使用默认数学模式（CUDA核心上的FP32）
-  cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);
+  CHECK_CUBLAS(cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH));
 
   // 缩放因子: C = 1.0 * A * B + 0.0 * C
   static float alpha = 1.0;
@@ -57,9 +65,11 @@ void cublas_sgemm(float *A, float *B, float *C, size_t M, size_t N, size_t K) {
 
   // 执行GEMM: 由于行主序布局，我们计算 B^T * A^T = (A*B)^T
   // 然后以列主序存储结果，看起来就是行主序的C
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_32F,
-               N, A, CUDA_R_32F, K, &beta, C, CUDA_R_32F, N, CUBLAS_COMPUTE_32F,
-               CUBLAS_GEMM_DEFAULT);
+  CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha,
+                            B, CUDA_R_32F, N, A, CUDA_R_32F, K, &beta, C,
+                            CUDA_R_32F, N, CUBLAS_COMPUTE_32F,
+                            CUBLAS_GEMM_DEFAULT));
+  CHECK_CUBLAS(cublasDestroy(handle));
 }
 
 // =============================================================================
@@ -84,19 +94,21 @@ void cublas_sgemm(float *A, float *B, float *C, size_t M, size_t N, size_t K) {
 void cublas_sgemm_tf32(float *A, float *B, float *C, size_t M, size_t N,
                        size_t K) {
   cublasHandle_t handle = nullptr;
-  cublasCreate(&handle);
+  CHECK_CUBLAS(cublasCreate(&handle));
 
   // 启用TF32 Tensor Core操作
   // 这允许cuBLAS使用TF32精度的Tensor Core
-  cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);
+  CHECK_CUBLAS(cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH));
 
   static float alpha = 1.0;
   static float beta = 0.0;
 
   // CUBLAS_GEMM_DEFAULT_TENSOR_OP提示cuBLAS优先使用Tensor Core算法
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_32F,
-               N, A, CUDA_R_32F, K, &beta, C, CUDA_R_32F, N, CUBLAS_COMPUTE_32F,
-               CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+  CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha,
+                            B, CUDA_R_32F, N, A, CUDA_R_32F, K, &beta, C,
+                            CUDA_R_32F, N, CUBLAS_COMPUTE_32F,
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+  CHECK_CUBLAS(cublasDestroy(handle));
 }
 
 #define STRINGFY(str) #str

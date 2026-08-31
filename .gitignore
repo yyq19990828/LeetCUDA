@@ -30,4 +30,8 @@ build*
 .github/copilot-instructions.md
 AGENTS.md
 kernels学习/
-.vscode/
+*.aux
+*.out.pyg
+.plans
+.tmp
+*.o
